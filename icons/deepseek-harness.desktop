@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=DeepSeek Harness Desktop
+Name[zh_CN]=DeepSeek Harness 桌面客户端
+GenericName=AI Development Harness
+GenericName[zh_CN]=AI 开发工具
+Comment=Run the DeepSeek Harness desktop workspace
+Comment[zh_CN]=运行 DeepSeek Harness 桌面工作区
+Exec=deepseek-harness %U
+Icon=deepseek-harness
+Terminal=false
+Categories=Development;
+Keywords=DeepSeek;Harness;AI;
+Keywords[zh_CN]=DeepSeek;Harness;AI;开发;
+StartupWMClass=deepseek-harness
+StartupNotify=true
+MimeType=x-scheme-handler/dsh;

@@ -1,0 +1,10 @@
+6abb4a7917e4c61ef6905892e14d7cd6c4c11af3f27f63d9f8056972f5f5f699  DeepSeek-Harness-0.2.0-rc.2-aarch64.AppImage
+ec14ed98d52c1eff4cbe4c3224de1c4b5c03484b2f56ab84ab082823e8f8a50d  DeepSeek-Harness-0.2.0-rc.2-x86_64.AppImage
+5e2c2e9dcb716b9d53fbe3138c0d30f969864bceb23eb52211a6fc9deb861e3c  deepseek-harness_0.2.0-rc.2_amd64.bundled.deb
+9bd8f39c71a07f81e46b0634c96f94f3be6e2dbc2394aa7179cd3113052cdfd2  deepseek-harness_0.2.0-rc.2_amd64.system.deb
+9090d54462066c315f30885e02fabd2b50e673dbb1f61872341731524b77540f  deepseek-harness_0.2.0-rc.2_arm64.bundled.deb
+8475438655ce56ba58e5599b7672a44ecf139081f5916ad26972b96def3e2c4b  deepseek-harness_0.2.0-rc.2_arm64.system.deb
+11810f6811fe1135054c8c6b3fe26e0bd65eca15dd4f502bc972c0d5f1040227  deepseek-harness-desktop-0.2.0_rc.2-1-aarch64.pkg.tar.zst
+7a8c79d3fb5f771bed65c811c6fd903f5d779cf7527fadf99d8e1bd474135cd6  deepseek-harness-desktop-0.2.0_rc.2-1-x86_64.pkg.tar.zst
+1b52a1efb887b4c4cf345b247839883e4014d174aa873d3dcff99314af4e6a0e  deepseek-harness-0.2.0-0.rc2.aarch64.rpm
+936191a771d0463e13488d8854dc120be1c3d0246116cf0f71a3f82f63993d02  deepseek-harness-0.2.0-0.rc2.x86_64.rpm

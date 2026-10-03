@@ -1,0 +1,17 @@
+# 构建产物与暂存（不应入库）
+/dist/
+/out-x64/
+/out-arm64/
+/dl/
+/tools/
+/others/
+/app-new/
+/*.log
+/pipcache*/
+/t-home/
+/armverify/
+/.pkgsrc/
+
+# 系统文件
+.DS_Store
+Thumbs.db
