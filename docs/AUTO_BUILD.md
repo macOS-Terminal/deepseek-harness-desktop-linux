@@ -238,4 +238,31 @@ DSH_DESKTOP_RESOURCES_DIR="$PWD/out-arm64/resources" ELECTRON_RUN_AS_NODE=1 \
 缺少必要锚点时返回失败并保留原文件。Linux 快捷键仍使用 Control。
 
 在本机 KDE / XWayland 上已检查普通窗口、最大化、进入与退出全屏的布局。
-原生 Wayland 和其他桌面仍需各自验证。
+原生 Wayland 也已检查当前载荷的材质回退；其他桌面仍需各自验证。
+
+## 侧栏材质与圆角
+
+默认使用实色侧栏。构建时可开启自动毛玻璃：
+
+```bash
+./auto-build.sh --translucent-sidebar
+# 恢复默认实色模式
+./auto-build.sh --opaque-sidebar
+```
+
+也可设置 `DSH_TRANSLUCENT_SIDEBAR=1`。这些选项作用于生成应用树的阶段；
+仅运行 `--only package` 不会改变已有应用树的材质。
+
+自动模式使用 `xprop` 检查 X11 / XWayland 合成器是否公布模糊协议，并验证
+窗口所有权与实际属性回读。本机 KDE / XWayland 已确认系统模糊生效。
+缺少 xprop、不支持协议或使用原生 Wayland 时，以完整实色背景和柔和渐变回退；
+CSS 渐变不等同于桌面模糊。不需要安装新 npm 或原生编译依赖。
+
+实色、系统模糊和回退模式均保留 12px 圆角；最大化与全屏时恢复直角。
+透明窗口仅用于圆角和已确认可用的系统模糊；实色回退的内容仍完全绘制。
+圆角由页面裁剪保证，并阻止 body 的实色背景扩展到画布角落，
+不要求用户安装 KWin 圆角插件。当前载荷已通过 KDE / XWayland 的系统模糊测试、
+原生 Wayland 的实色回退测试，并以整屏截图检查窗口外轮廓。
+
+Electron 的原生圆角依赖桌面装饰支持，透明窗口也存在平台限制，参见
+[Electron 窗口样式文档](https://www.electronjs.org/docs/latest/tutorial/custom-window-styles)。

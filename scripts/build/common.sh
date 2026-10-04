@@ -30,6 +30,8 @@ DeepSeek Harness — Linux 一键构建
   --dmg 路径|URL         使用自备的官方 dmg（URL 会先下到 <store>/others/ 再当本地文件用）
   --force                忽略已存在的下载/中间产物，重新生成
   --clean                成功后清理解包物、pip 缓存和打包暂存；已打包的应用树也删除
+  --translucent-sidebar   自动请求桌面模糊，失败回退实色磨砂（构建时选项）
+  --opaque-sidebar        不透明实色侧栏（默认；构建时选项）
   --no-verify            跳过应用树自检（默认自检失败即中止）
   --no-sha256            跳过 Electron/Node 的官方 SHA256 比对（不推荐）
   --allow-drift          原生包找不到同版本时允许改用别的版本（默认直接失败）
@@ -47,6 +49,7 @@ DeepSeek Harness — Linux 一键构建
 
 环境变量: DSH_GH_PROXY DSH_NPM_REGISTRY DSH_NODE_MIRROR DSH_ELECTRON_MIRROR
           DSH_PYPI_MIRROR DSH_ELECTRON_VERSION DSH_DMG_URL DSH_PBS_TAGS DSH_STORE
+          DSH_TRANSLUCENT_SIDEBAR
 EOF
 }
 

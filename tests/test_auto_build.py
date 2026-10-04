@@ -46,6 +46,7 @@ class BuildCLI(unittest.TestCase):
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}',
                         NETWORK_MARKER=str(self.marker))
         self.env.pop('DSH_STORE', None)
+        self.env.pop('DSH_TRANSLUCENT_SIDEBAR', None)
 
     def run_cli(self, *args):
         return subprocess.run(['bash', str(self.root / 'auto-build.sh'), *args],
@@ -54,6 +55,8 @@ class BuildCLI(unittest.TestCase):
     def test_help_and_dry_run_do_not_write_or_use_network(self):
         before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob('*'))
         for args in [('--help',), ('--dry-run', '--arch', 'all'),
+                     ('--dry-run', '--translucent-sidebar'),
+                     ('--dry-run', '--opaque-sidebar'),
                      ('--dry-run', '--force', '--only', 'tree,package'),
                      ('--dry-run', '--clean', '--arch', 'all')]:
             result = self.run_cli(*args)

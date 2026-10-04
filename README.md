@@ -34,7 +34,7 @@
 ```
 ├── patches/
 │   ├── patch-main.py            平台准入 / resources 根 / 打包态 / 托盘 / 窗口控制 IPC
-│   ├── patch-mac-chrome.py      macOS 风格装饰：左置交通灯 + 侧栏毛玻璃
+│   ├── patch-mac-chrome.py      macOS 风格装饰：左置交通灯 + 圆角 + 可选系统模糊
 │   ├── patch-fingerprint.py     按 ELF 符号定位并放宽 V8 指纹白名单（x64 / arm64）
 │   ├── patch-titlebar.py        早期隐藏标题栏方案（已被 patch-mac-chrome 取代）
 │   └── upgrade-mac-chrome.py    对已打过旧版 chrome 的树做增量修复（幂等）

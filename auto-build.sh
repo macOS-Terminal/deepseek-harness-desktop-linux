@@ -50,6 +50,12 @@ ARCHES=(); ONLY="prepare,tree,package"; FORCE=0; CLEAN=0; JOBS=4
 WORK=""; VERIFY=1; DRY_RUN=0; CHECK_SHA=1; ALLOW_DRIFT=0
 DMG_URL_OVERRIDE=""
 FORMATS=appimage
+TRANSLUCENT_SIDEBAR="${DSH_TRANSLUCENT_SIDEBAR:-0}"
+case "$TRANSLUCENT_SIDEBAR" in
+  1|true|yes|on) TRANSLUCENT_SIDEBAR=1 ;;
+  0|false|no|off) TRANSLUCENT_SIDEBAR=0 ;;
+  *) die "DSH_TRANSLUCENT_SIDEBAR 需要 0/1 或 true/false" ;;
+esac
 
 for module in common download prepare tree package native-packages; do
   source "$ROOT/scripts/build/$module.sh"
@@ -57,6 +63,8 @@ done
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --translucent-sidebar) TRANSLUCENT_SIDEBAR=1; shift ;;
+    --opaque-sidebar) TRANSLUCENT_SIDEBAR=0; shift ;;
     --formats)  FORMATS="${2:?--formats 需要一个值}"; shift 2 ;;
     --arch)     ARCHES+=("${2:?--arch 需要一个值}"); shift 2 ;;
     --only)     ONLY="${2:?--only 需要一个值}"; shift 2 ;;
@@ -176,6 +184,7 @@ step "仓库:   $ROOT"
 step "架构:   ${ARCHES[*]}（host=$HOST_ARCH）"
 step "阶段:   $ONLY"
 step "格式:   $FORMATS"
+step "侧栏:   $([ "$TRANSLUCENT_SIDEBAR" -eq 1 ] && echo 自动系统模糊或实色磨砂回退 || echo 不透明实色)"
 step "加速:   ${GH_PROXY:-（直连 GitHub）}"
 step "暂存:   $WORK_BASE/<arch>"
 

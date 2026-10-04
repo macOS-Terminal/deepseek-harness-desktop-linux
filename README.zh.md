@@ -26,7 +26,7 @@ dsh-desktop-linux-source/
 │   ├── patch-main.py            平台准入、resources 根、打包态判定、托盘、窗口控制 IPC
 │   ├── patch-titlebar.py        隐藏原生标题栏（历史版本，被 patch-mac-chrome 取代）
 │   ├── patch-fingerprint.py     放宽 node-addon-require-builtin 的 V8 指纹白名单
-│   ├── patch-mac-chrome.py      macOS 风格窗口装饰（左置交通灯 + 侧栏毛玻璃）
+│   ├── patch-mac-chrome.py      macOS 风格窗口装饰（左置交通灯 + 圆角 + 可选系统模糊）
 │   └── upgrade-mac-chrome.py    对已打过旧版 chrome 的树做增量升级（幂等补充）
 ├── image-worker-src/            Sharp/libvips 进程隔离方案
 │   ├── client.cjs               Sharp API 兼容层（跑在 Electron 内，只转发）
@@ -177,7 +177,7 @@ python3 patches/patch-fingerprint.py \
 | 补丁 | 作用 | 不改会怎样 |
 |---|---|---|
 | `patch-main.py` | 平台准入放行 linux；`DSH_DESKTOP_RESOURCES_DIR` / `DSH_DESKTOP_FORCE_PACKAGED`；托盘放行并改用 PNG；无托盘时关窗退出 | 启动即抛 `unsupported platform` |
-| `patch-mac-chrome.py` | 复用应用自带的 `data-windows-titlebar` 模式获得顶部预留带与拖拽区，绘制左上交通灯，侧栏毛玻璃 | 顶部有原生标题栏、按钮在右侧 |
+| `patch-mac-chrome.py` | 复用应用自带的 `data-windows-titlebar` 模式获得顶部预留带与拖拽区，绘制左上交通灯与圆角，可选系统模糊 | 顶部有原生标题栏、按钮在右侧 |
 | `patch-fingerprint.py` | 放宽 V8 指纹匹配（x64 `0x17cdd`、arm64 `0x1df14` 写 `mov w0,#1; ret`） | 非 44.0.0 的 Electron 启动失败 |
 | `upgrade-mac-chrome.py` | 旧版 chrome 的增量修复 | 仅在树已打过旧版 chrome 时需要 |
 
@@ -280,7 +280,7 @@ qemu-aarch64-static -L <sysroot> out-arm64/resources/runtime/.../node -e "consol
 7. **Sharp 崩溃**：libvips 在 Electron 内段错误且 JS 无法捕获 →
    改成独立 Node 进程隔离。
 8. **窗口装饰**：复用应用自身的 `data-windows-titlebar` 模式 +
-   复刻它自己的 darwin 材质配方，得到左置交通灯与侧栏毛玻璃。
+   绘制左置交通灯与独立圆角；默认实色，`--translucent-sidebar` 可请求系统模糊，失败时回退实色渐变。
 
 详细根因与验证记录见 `docs/CHANGELOG.md`。
 
@@ -294,10 +294,10 @@ qemu-aarch64-static -L <sysroot> out-arm64/resources/runtime/.../node -e "consol
 | `unsupported Electron runtime fingerprint` | `patch-fingerprint.py` 没打 |
 | 启动即 `EADDRINUSE 127.0.0.1:19387` | 已有一个实例在跑（应用固定用这个端口），先关掉 |
 | 图片一发就整个应用崩 | Sharp 替身包没装好，检查 `resources/image-worker/` |
-| 侧栏折叠后无法展开 / 侧栏右缘缺口 / 文字发灰 | 均因 `backdrop-filter` 放在侧栏元素上（旧版缺陷）。现由独立层 `#dsh-mac-vibrancy` 承担模糊，且插在 `#root` 之前 + `z-index:-1` |
+| 侧栏折叠后无法展开 / 侧栏右缘缺口 / 文字发灰 | 均因 `backdrop-filter` 放在侧栏元素上（旧版缺陷）。现由合成器提供桌面模糊，独立层 `#dsh-mac-vibrancy` 承担材质，且插在 `#root` 之前 + `z-index:-1` |
 | 内容区左上角露白、全屏布局不对 | 应用给 `_centerCol` 的 16px 圆角 + 缺全屏规则；已置零圆角并对齐 macOS 全屏（隐藏交通灯、折叠键靠左） |
-| 真全屏（niri 等平铺合成器）不隐藏交通灯 | 上游把 Linux 排除在事件注册与 preload 监听之外，且平铺合成器不报告全屏；已补视口自检 |
-| 侧栏底部有实心暗条 | 应用的列表淡出层渐变到不透明的 `--dsw-specific-sidebar-fill`；已改用半透明 tint 变量 |
+| 真全屏（niri 等平铺合成器）不隐藏交通灯 | 上游把 Linux 排除在事件注册与 preload 监听之外，已补原生全屏事件；最大化保留交通灯 |
+| 侧栏底部有实心暗条 | 应用的列表淡出层渐变到不透明的 `--dsw-specific-sidebar-fill`；已隐藏淡出层 |
 | 登录页文字全消失 | `preload-welcome.cjs` 重复声明 `VIBRANCY_ID` 导致 preload 语法错误 |
 | 系统 Electron 下白屏 | 缺 `DSH_DESKTOP_RESOURCES_DIR` / `DSH_DESKTOP_FORCE_PACKAGED` |
 | 打包后二进制没有执行权限 | 工作区在 NTFS；`build-packages.sh` 的 `normalize_modes` 必须保留 |

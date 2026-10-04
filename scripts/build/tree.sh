@@ -225,7 +225,7 @@ PYEOF
 
   # 7) 补丁
   python3 "$ROOT/patches/patch-main.py" "$out/resources/app/lib/main.js"
-  python3 "$ROOT/patches/patch-mac-chrome.py" "$out/resources/app"
+  DSH_TRANSLUCENT_SIDEBAR="$TRANSLUCENT_SIDEBAR" python3 "$ROOT/patches/patch-mac-chrome.py" "$out/resources/app"
   local fingerprint
   fingerprint="$(find "$out/resources/app/dsh/node_modules" -path '*node-addon-require-builtin-linux-*' -name '*.node' | head -1)"
   [ -n "$fingerprint" ] || die "找不到 node-addon-require-builtin 的 Linux 原生模块"
