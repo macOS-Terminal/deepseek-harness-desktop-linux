@@ -140,6 +140,15 @@ build_deb() {
     cp "$META/icons/${s}x${s}/deepseek-harness.png" "$D/usr/share/icons/hicolor/${s}x${s}/apps/"
   done
   local size; size=$(du -sk "$D" | cut -f1)
+  # Optional fields must be omitted entirely, never emitted as an empty line:
+  # a blank line ends the paragraph, so everything after it (Homepage,
+  # Description) would be parsed as a second, malformed package stanza and
+  # dpkg/apt would refuse to install the archive.
+  local recommends_line=""
+  if [ -n "$rec" ]; then
+    recommends_line="Recommends: $rec
+"
+  fi
   cat > "$d/control/control" <<EOF
 Package: deepseek-harness
 Version: $VER
@@ -149,8 +158,7 @@ Architecture: $DEBARCH
 Maintainer: DeepSeek Harness Linux port <noreply@localhost>
 Installed-Size: $size
 Depends: $deps
-${rec:+Recommends: $rec}
-Homepage: https://harness.deepseek.com
+${recommends_line}Homepage: https://harness.deepseek.com
 Description: DeepSeek Harness desktop client ($variant Electron build)
  DeepSeek Harness desktop application repackaged for Linux.
  This build $([ "$variant" = bundled ] && echo "bundles its own Electron 44.4.5 runtime" || echo "uses the distribution-provided Electron runtime").

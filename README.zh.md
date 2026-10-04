@@ -291,6 +291,7 @@ qemu-aarch64-static -L <sysroot> out-arm64/resources/runtime/.../node -e "consol
 | 系统 Electron 下白屏 | 缺 `DSH_DESKTOP_RESOURCES_DIR` / `DSH_DESKTOP_FORCE_PACKAGED` |
 | 打包后二进制没有执行权限 | 工作区在 NTFS；`build-packages.sh` 的 `normalize_modes` 必须保留 |
 | Python 报 `symbol lookup error` | 用了被 `strip` 过的 python-build-standalone，改用 `install_only_stripped` |
+| `dpkg -i` 报 control 文件格式错误 | 生成 control 时可选字段展开成了空行（空行=段落分隔符）；已改为整行省略。见 CHANGELOG 的 issue #1 条目 |
 
 ---
 

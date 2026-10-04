@@ -32,7 +32,6 @@
   已改写为 Linux 版本，可自动定位发行版 electron 或内置二进制，
   再以 `ELECTRON_RUN_AS_NODE` 运行 `dsh-desktop-host/lib/cli.js`。
 
-### 修复 — Linux存在Electron标题栏的问题
 
 ### 修复 — Linux 图片附件崩溃（Sharp / libvips 段错误）
 
@@ -97,6 +96,49 @@ webp / gif 四种类型全部通过；坏数据抛错而非崩溃。
 
 验证：侧栏像素实测 `srgba(28,28,28,0.5)`（真 50% 透明）、内容区 `alpha=1`；
 拖拽带 48px 且 `app-region:drag`；交通灯 (16,18) 三色正确。
+
+### 修复 — deb 的 control 文件存在空行，导致 dpkg/apt 拒绝安装
+
+**（社区反馈：[issue #1](https://github.com/macOS-Terminal/deepseek-harness-desktop-linux/issues/1)）**
+
+现象：`dpkg -i` / `apt install ./*.deb` 报控制文件格式错误，无法安装。
+
+根因在 `build-packages.sh` 生成 `DEBIAN/control` 的那段 heredoc：
+
+```sh
+Depends: $deps
+${rec:+Recommends: $rec}      # ← bundled 变体下 rec 为空，这一行展开成空行
+Homepage: https://harness.deepseek.com
+```
+
+`${rec:+...}` 在 `rec` 未设置时展开为**空字符串**，但模板里该行本身还在，
+于是输出一个真正的空行。而 Debian 控制文件的语法中，**空行是段落分隔符** ——
+dpkg 会把后面的 `Homepage:` / `Description:` 当成「第二个包」的起始，
+而该段缺少必需的 `Package:` / `Version:`，解析随即失败。
+
+这一点已用严格的分段解析器复现并验证：
+
+| 版本 | 解析出的段落数 | 结果 |
+|---|---|---|
+| 修复前 | **2**（Homepage 起被当作新包） | ✗ 非法 |
+| 修复后 · bundled | 1 | ✓ 合法 |
+| 修复后 · system | 1 | ✓ 合法 |
+
+修复：把可选字段先拼成变量，为空时**整行不输出**（而不是留空行），
+同时保留 `Recommends` 行尾换行，避免与下一字段粘连：
+
+```sh
+local recommends_line=""
+if [ -n "$rec" ]; then
+  recommends_line="Recommends: $rec
+"
+fi
+...
+${recommends_line}Homepage: https://harness.deepseek.com
+```
+
+> 注意：`system` 变体因为有 `Recommends` 字段，原本不会触发该问题；
+> 只有 **`bundled` 变体**（`rec` 为空）会产生空行 —— 这也解释了为何只有部分用户遇到。
 
 ### 修复 — 折叠侧栏时新建按钮与交通灯重叠（用户实测反馈）
 
@@ -277,6 +319,7 @@ pointer-events:none`），侧栏本身只保留 `background:0 0`。这样：
 | 真全屏（平铺合成器）检测：铺满屏幕即隐藏交通灯 | ✅ |
 | 侧栏底部淡出条跟随半透明底色、无实心暗带 | ✅ |
 | 折叠态导轨按钮避开交通灯（新建 88px / 展开 128px） | ✅ |
+| deb control 文件无空行（分段解析段落数=1） | ✅ |
 | 标题栏补丁存在于两架构包内 | ✅ 10/10 |
 | ARM64 node / python / sharp（qemu，取自成品 deb） | ✅ |
 | `sha256sum -c`（10 个包） | ✅ 10/10 |
