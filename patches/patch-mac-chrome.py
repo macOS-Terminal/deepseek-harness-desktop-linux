@@ -172,6 +172,15 @@ html[data-dsh-mac-chrome] body {
 html[data-dsh-linux-blur="system"] body {
 	--dsh-linux-band-bg: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent);
 }
+/* Plugins may paint their own picker instead of using MenuSurface (for example
+   skills-management's .sk-picker). Its menu token is translucent upstream and
+   supplies no blur itself. Rebind the shared tokens in every opaque mode so
+   both host menus and plugin-owned portals paint a complete theme surface. */
+html[data-dsh-mac-chrome]:not([data-dsh-linux-blur="system"]) body {
+	--dsw-menu-surface-fill: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base)) !important;
+	--dsw-specific-menu: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base)) !important;
+	--dsw-menu-backdrop-filter: none !important;
+}
 html[data-dsh-mac-chrome] [class*="_frame"] { background: 0 0 !important; }
 html[data-dsh-mac-chrome] [class*="_frame"]::before {
 	background: linear-gradient(to right,
@@ -530,7 +539,7 @@ def verify_end_state(app_dir: str) -> int:
         material_ok = (
             'backgroundColor:' in main_body and 'transparent: true' in main_body
             and 'backgroundColor:' in welcome_body and 'transparent: true' in welcome_body
-            and 'backdrop-filter' not in injected
+            and 'backdrop-filter' not in injected.replace('--dsw-menu-backdrop-filter: none !important;', '')
             and 'var(--dsw-specific-sidebar-fill) !important' in injected
         )
         material_name = '侧栏材质：不透明实色（跟随明暗主题，无 backdrop-filter）'
