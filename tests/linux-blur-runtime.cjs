@@ -43,7 +43,7 @@ async function probe(options = {}) {
   return { mode, calls, backgrounds };
 }
 
-function renderer(preload, reply) {
+function renderer(preload, reply, failStyleOnce = false) {
   let response = reply;
   let maximized = false;
   const source = fs.readFileSync(path.join(app, 'lib', preload), 'utf8')
@@ -64,8 +64,12 @@ function renderer(preload, reply) {
   };
   const context = vm.createContext({
     document, process: { platform: 'linux' },
-    electron: { ipcRenderer: { invoke: async (channel, action) => {
-      calls.push([channel, action]);
+    electron: { ipcRenderer: { invoke: async (channel, action, css) => {
+      calls.push([channel, action, css]);
+      if (action === "chrome-style") {
+        if (failStyleOnce) { failStyleOnce = false; throw new Error('IPC not ready'); }
+        return true;
+      }
       if (action === "state") return { maximized };
       if (response instanceof Error) throw response;
       return response;
@@ -87,6 +91,21 @@ function renderer(preload, reply) {
 }
 
 (async () => {
+  // The renderer only styles its own window, including CSP-protected welcome.
+  const control = main.match(/ipcMain.handle\("dsh-desktop:linux-window-control", async \(event, action, css\) => \{[\s\S]*?\n\t\}\);/)[0];
+  let ownedWindow = null, handler;
+  const inserted = [];
+  vm.runInNewContext(control, {
+    ipcMain: { handle: (_, callback) => { handler = callback; } },
+    BrowserWindow: { fromWebContents: () => ownedWindow },
+  });
+  assert.equal(await handler({ sender: {} }, 'chrome-style', 'body {}'), false);
+  ownedWindow = { isDestroyed: () => false, webContents: { insertCSS: async css => inserted.push(css) } };
+  assert.equal(await handler({ sender: {} }, 'chrome-style', null), false);
+  assert.equal(await handler({ sender: {} }, 'chrome-style', 'x'.repeat(65537)), false);
+  assert.equal(await handler({ sender: {} }, 'chrome-style', 'body { background: #fff }'), true);
+  assert.deepEqual(inserted, ['body { background: #fff }']);
+
   // A maximized KWin window must keep its controls; real fullscreen hides them.
   const body = main.match(/const sendFullscreen = \(\) => \{([\s\S]*?)\n\t\t\};/)[1];
   for (const fullscreen of [false, true]) {
@@ -119,7 +138,14 @@ function renderer(preload, reply) {
       const state = renderer(preload, reply);
       await new Promise(resolve => setImmediate(resolve));
       assert.equal(state.root.dataset.dshLinuxBlur, solid ? 'solid' : reply === 'system' ? 'system' : 'css');
-      assert.equal(state.calls[0][1], solid ? 'state' : 'blur');
+      assert.equal(state.calls.filter(call => call[1] !== 'chrome-style')[0][1], solid ? 'state' : 'blur');
+      const styles = state.calls.filter(call => call[1] === 'chrome-style');
+      assert.equal(styles.length, 1);
+      assert.ok(styles[0][2].includes('clip-path: inset(0 round 12px)'));
+      assert.ok(!state.elements.has('dsh-mac-chrome-style'), 'CSP-blocked inline styles must not be used');
+      state.intervals.find(timer => timer.delay === 500).callback();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(state.calls.filter(call => call[1] === 'chrome-style').length, 1);
       assert.equal(state.root.dataset.dshWindowMaximized, 'false');
       state.setMaximized(true);
       state.handlers.resize();
@@ -140,5 +166,13 @@ function renderer(preload, reply) {
       }
     }
   }
+  const retry = renderer('preload-welcome.cjs', 'css', true);
+  await new Promise(resolve => setImmediate(resolve));
+  const poll = retry.intervals.find(timer => timer.delay === 500);
+  poll.callback();
+  await new Promise(resolve => setImmediate(resolve));
+  poll.callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(retry.calls.filter(call => call[1] === 'chrome-style').length, 2, 'Retry failed CSS once; keep successful insertion');
   console.log('Linux blur + preload runtime checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -83,7 +83,7 @@ function wireFullscreen(window) {
         self.apply(False)
         path = self.app / "lib/main.js"
         path.write_text(path.read_text().replace(
-            'ipcMain.handle("dsh-desktop:linux-window-control", async (event, action)',
+            'ipcMain.handle("dsh-desktop:linux-window-control", async (event, action, css)',
             'ipcMain.handle("dsh-desktop:linux-window-control", (event, action)'
         ).replace('\t\tif (action === "blur") return requestLinuxBlur(window);\n', ''))
         self.apply()

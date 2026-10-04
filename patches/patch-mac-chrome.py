@@ -141,7 +141,8 @@ function installLinuxChrome() {
 	const HEIGHT = __TITLEBAR_HEIGHT__;
 	const LIGHTS_ID = "dsh-mac-lights";
 	const VIBRANCY_ID = "dsh-mac-vibrancy";
-	const STYLE_ID = "dsh-mac-chrome-style";
+	let chromeStylePending = false;
+	let chromeStyleApplied = false;
 	let blurMode = "css";
 	let blurPending = false;
 	const syncBlur = async () => {
@@ -283,6 +284,15 @@ __EXTRA_CSS__`;
 		}
 		return host;
 	};
+	// The first-run welcome page rejects inline styles (style-src 'self').
+	// Electron applies our fixed chrome stylesheet without weakening its CSP.
+	const syncChromeStyle = async () => {
+		if (chromeStyleApplied || chromeStylePending) return;
+		chromeStylePending = true;
+		try { chromeStyleApplied = await electron.ipcRenderer.invoke(CHANNEL, "chrome-style", CSS) === true; }
+		catch { /* Retry on the next layout pass if the IPC is not ready yet. */ }
+		finally { chromeStylePending = false; }
+	};
 	const apply = () => {
 		const root = document.documentElement;
 		if (root === null) return;
@@ -306,12 +316,7 @@ __EXTRA_CSS__`;
 				}
 			}
 		}
-		if (document.getElementById(STYLE_ID) === null) {
-			const style = document.createElement("style");
-			style.id = STYLE_ID;
-			style.textContent = CSS;
-			(document.head ?? root).appendChild(style);
-		}
+		syncChromeStyle();
 		if (__TRANSLUCENT__ && document.getElementById(VIBRANCY_ID) === null && document.body !== null) {
 			const vibrancy = document.createElement("div");
 			vibrancy.id = VIBRANCY_ID;
@@ -376,6 +381,7 @@ html[data-dsh-mac-chrome], html[data-dsh-mac-chrome] body {
 	}
 }
 html[data-dsh-mac-chrome] .titlebar { padding-left: 68px; }
+html[data-dsh-mac-chrome][data-dsh-linux-blur="solid"] #root { background: var(--dsw-alias-bg-base) !important; }
 html[data-dsh-mac-chrome]:not([data-dsh-linux-blur="solid"]) #root { background: transparent !important; }
 html[data-dsh-mac-chrome] #dsh-mac-vibrancy { width: 100%; }
 '''
@@ -549,6 +555,7 @@ def verify_end_state(app_dir: str) -> int:
          len(re.findall(r'(?:const|let|var)\s+VIBRANCY_ID', pre_welcome)) == 1),
     ]
     checks.append(('模糊与实色模式都有圆角裁剪', all('clip-path: inset(0 round 12px)' in preload for preload in (pre_app, pre_welcome))))
+    checks.append(('首次启动样式通过 Electron 注入，不依赖内联样式', 'await window.webContents.insertCSS(css)' in main and all('syncChromeStyle();' in preload for preload in (pre_app, pre_welcome))))
     checks.append(('系统模糊 IPC 动作只有一份', main.count('if (action === "blur")') == 1))
     print('== 窗口层最终态断言（材质模式：%s）' % ('自动毛玻璃' if SIDEBAR_TRANSLUCENT else '不透明'))
     for name, ok in checks:
@@ -674,9 +681,14 @@ def apply_patch(app_dir: str) -> int:
 \t* places native decorations on the right, and the Window Controls Overlay
 \t* cannot be repositioned. Only the sender's own window is ever affected.
 \t*/
-\tipcMain.handle("dsh-desktop:linux-window-control", async (event, action) => {
+\tipcMain.handle("dsh-desktop:linux-window-control", async (event, action, css) => {
 \t\tconst window = BrowserWindow.fromWebContents(event.sender);
 \t\tif (window === null || window.isDestroyed()) return false;
+\t\tif (action === "chrome-style") {
+\t\t\tif (typeof css !== "string" || css.length > 65536) return false;
+\t\t\tawait window.webContents.insertCSS(css);
+\t\t\treturn true;
+\t\t}
 \t\tif (action === "blur") return requestLinuxBlur(window);
 \t\tif (action === "close") window.close();
 \t\telse if (action === "minimize") window.minimize();
@@ -699,7 +711,12 @@ def apply_patch(app_dir: str) -> int:
     if 'dsh-desktop:linux-window-control' in src:
         # 升级旧处理器，只扩充一个动作，不改原有窗口控制。
         src = src.replace('ipcMain.handle("dsh-desktop:linux-window-control", (event, action) => {',
-                          'ipcMain.handle("dsh-desktop:linux-window-control", async (event, action) => {', 1)
+                          'ipcMain.handle("dsh-desktop:linux-window-control", async (event, action, css) => {', 1)
+        src = src.replace('ipcMain.handle("dsh-desktop:linux-window-control", async (event, action) => {', 'ipcMain.handle("dsh-desktop:linux-window-control", async (event, action, css) => {', 1)
+        if 'if (action === "chrome-style")' not in src:
+            at = src.index('\t\tif (action === "blur")', src.index('ipcMain.handle("dsh-desktop:linux-window-control"')) if 'if (action === "blur")' in src else src.index('\t\tif (action === "close")', src.index('ipcMain.handle("dsh-desktop:linux-window-control"'))
+            style_action = '\t\tif (action === "chrome-style") {\n\t\t\tif (typeof css !== "string" || css.length > 65536) return false;\n\t\t\tawait window.webContents.insertCSS(css);\n\t\t\treturn true;\n\t\t}\n'
+            src = src[:at] + style_action + src[at:]
         if 'if (action === "blur")' not in src:
             control_start = src.index('ipcMain.handle("dsh-desktop:linux-window-control"')
             close_at = src.index('\t\tif (action === "close")', control_start)
