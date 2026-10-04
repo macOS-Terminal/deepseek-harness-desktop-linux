@@ -229,3 +229,13 @@ DSH_DESKTOP_RESOURCES_DIR="$PWD/out-arm64/resources" ELECTRON_RUN_AS_NODE=1 \
 当前 x86_64 验证环境虽有 qemu-aarch64，但没有 ARM64 动态加载器和系统库；
 未声称 ARM64 GUI 或 Sharp 运行验收通过。系统 Electron 版发行包还需目标发行版
 提供兼容的 ARM64 Electron。
+
+## Linux 标题栏
+
+主窗口与欢迎窗口明确使用 `frame:false`，由左上角交通灯控制关闭、最小化
+和最大化。最大化保留交通灯；真正全屏时隐藏，退出全屏恢复。
+补丁可用于原始载荷及已有旧补丁的应用树；重复运行不增加分支或注入块，
+缺少必要锚点时返回失败并保留原文件。Linux 快捷键仍使用 Control。
+
+在本机 KDE / XWayland 上已检查普通窗口、最大化、进入与退出全屏的布局。
+原生 Wayland 和其他桌面仍需各自验证。

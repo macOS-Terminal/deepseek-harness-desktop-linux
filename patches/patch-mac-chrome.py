@@ -26,8 +26,23 @@
 用法: patch-mac-chrome.py <resources/app 目录>
 """
 import sys
+import re
+from pathlib import Path
 
 TITLEBAR_HEIGHT = 48
+
+LINUX_WELCOME_RE = re.compile(r'\t\t\.\.\.platform === "linux" \? \{.*?\n\t\t\} : \{\},\n', re.S)
+LINUX_MAIN_RE = re.compile(r'\t\t\.\.\.process\.platform === "linux" && primary \? \{.*?\n\t\t\} : \{\},\n', re.S)
+
+# 上一次插入留下的行粘连：`} : {},` 与下一行并到了同一行（块尾缺换行导致）。
+# 不修掉的话，下一轮匹配不到自己的块，会以为“还没有分支”而重复插入。
+MERGED_BLOCK_RE = re.compile(r'(\n\t\t\} : \{\},)\t+(\.\.\.)')
+
+CHROME_BEGIN = '/* dsh-linux-chrome:begin v3 */'
+CHROME_END = '/* dsh-linux-chrome:end */'
+CHROME_BEGIN_RE = re.compile(r'/\* dsh-linux-chrome:begin v\d+ \*/')
+
+
 
 PRELOAD_FN = r'''
 /* ------------------------------------------------------------------------ *
@@ -132,24 +147,6 @@ html[data-dsh-mac-chrome][data-fullscreen] [class*="_toggle"] { left: 12px !impo
    must stay to their right in every state rather than sliding underneath. */
 html[data-dsh-mac-chrome] [class*="_leadingSeat"] { left: 88px !important; }
 __EXTRA_CSS__`;
-	/**
-	 * Tiling compositors (niri, Hyprland, sway) fill the screen without telling
-	 * Electron: neither isFullScreen() nor isMaximized() flips, so the shell never
-	 * emits the fullscreen channel the bundle's layout keys off. Treat a viewport
-	 * that covers the display work area as fullscreen.
-	 */
-	const syncTilingFullscreen = () => {
-		const root = document.documentElement;
-		if (root === null) return;
-		const coversWidth = window.innerWidth >= window.screen.availWidth - 2;
-		const coversHeight = window.innerHeight >= window.screen.availHeight - 2;
-		root.dataset.dshTilingFullscreen = coversWidth && coversHeight ? "true" : "false";
-		const effective = (root.dataset.dshWindowFullscreen === "true") || (root.dataset.dshTilingFullscreen === "true");
-		if (effective) root.dataset.fullscreen = "true";
-		else delete root.dataset.fullscreen;
-	};
-	syncTilingFullscreen();
-	window.addEventListener("resize", syncTilingFullscreen);
 	let lights = null;
 	const send = (action) => { electron.ipcRenderer.invoke(CHANNEL, action); };
 	const buildLights = () => {
@@ -265,19 +262,46 @@ WELCOME_MARK_CALL = 'electron.contextBridge.exposeInMainWorld("dshWelcome", api)
 
 
 def inject_preload(path: str, call_anchor: str, extra_css: str) -> str:
-    src = open(path, encoding='utf8').read()
+    """Insert or replace the marked preload block, including legacy migration."""
+    src = Path(path).read_text(encoding='utf8')
+    src = src.replace(PRELOAD_FULLSCREEN_OLD, PRELOAD_FULLSCREEN_NEW, 1)
+    block = PRELOAD_FN.replace('__TITLEBAR_HEIGHT__', str(TITLEBAR_HEIGHT)).replace('__EXTRA_CSS__', extra_css)
+    target = f'{CHROME_BEGIN}\n{block}\ninstallLinuxChrome();\n{CHROME_END}'
+
+    marker = CHROME_BEGIN_RE.search(src)
+    if marker is not None:
+        begin = marker.start()
+        finish = src.find(CHROME_END, begin)
+        if finish == -1:
+            return f'  ✗ 注入块标记不完整（缺 {CHROME_END}）: {path}'
+        finish += len(CHROME_END)
+        if src[begin:finish] == target:
+            return f'  · 已注入过且内容一致（标题栏），跳过: {path}'
+        src = src[:begin] + target + src[finish:]
+        Path(path).write_text(src, encoding='utf8')
+        return f'  ✓ 注入块内容已更新为标题栏配方: {path}'
+
     if 'installLinuxChrome' in src:
-        return f'  · 已注入过，跳过: {path}'
+        if call_anchor not in src:
+            return f'  ✗ 旧版注入块存在但找不到锚点，无法迁移: {path}'
+        head = src.index(call_anchor) + len(call_anchor)
+        tail = src.index('installLinuxChrome();', head) + len('installLinuxChrome();')
+        src = src[:head] + '\n' + target + src[tail:]
+        Path(path).write_text(src, encoding='utf8')
+        return f'  ✓ 旧版注入块已迁移到 {CHROME_BEGIN}: {path}'
+
     if call_anchor not in src:
         return f'  ✗ 找不到锚点: {path}'
     src = src.replace(PRELOAD_FULLSCREEN_OLD, PRELOAD_FULLSCREEN_NEW, 1)
-    block = PRELOAD_FN.replace('__TITLEBAR_HEIGHT__', str(TITLEBAR_HEIGHT)).replace('__EXTRA_CSS__', extra_css)
-    src = src.replace(call_anchor, call_anchor + '\n' + block + '\ninstallLinuxChrome();\n', 1)
-    open(path, 'w', encoding='utf8').write(src)
+    src = src.replace(call_anchor, call_anchor + '\n' + target + '\n', 1)
+    Path(path).write_text(src, encoding='utf8')
     return f'  ✓ 注入 installLinuxChrome(): {path}'
 
 
 def replace_once(src: str, old: str, new: str, label: str, notes: list) -> str:
+    if new in src:
+        notes.append(f'  · 已应用: {label}')
+        return src
     if old not in src:
         notes.append(f'  ✗ 未匹配: {label}')
         return src
@@ -285,10 +309,47 @@ def replace_once(src: str, old: str, new: str, label: str, notes: list) -> str:
     return src.replace(old, new, 1)
 
 
-def main(app_dir: str) -> int:
+def ensure_linux_block(src: str, pattern, new: str, anchor: str, label: str, notes: list) -> str:
+    """把某个窗口的 Linux 分支做成**恰好一份**目标形态。三种来源都要走通：
+
+    * 官方 dmg 解出来的树：没有该分支 → 在 `anchor`（同窗 win32 分支）前新增；
+    * 已打过上一版补丁的树：分支形态可能是旧的 `titleBarOverlay`，也可能是内联的
+      `transparent: true` → **用正则找到已有分支并整体替换**；
+    * 已经被插成多份的树（历史 bug）→ 先全部删掉再写一份。
+
+    只认某一种旧形态是不够的：识别不到就会以为“还没有分支”而再插一份，
+    同一窗口出现两份配置 —— 后一份生效、前一份被断言读到，两边说法不一致。
+    """
+    repaired = MERGED_BLOCK_RE.sub(r'\1\n\t\t\2', src)
+    if repaired != src:
+        notes.append(f'  ! {label}：修复了上一次插入留下的行粘连')
+        src = repaired
+    if not new.endswith('\n'):
+        new += '\n'
+    found = list(pattern.finditer(src))
+    collapsed = 0
+    if len(found) > 1:
+        collapsed = len(found)
+        notes.append(f'  ! {label}：发现 {collapsed} 份 Linux 分支，收敛为 1 份')
+        src = pattern.sub('', src)
+        found = []
+    if len(found) == 1:
+        if found[0].group(0) == new:
+            notes.append(f'  · {label}：已是目标形态，跳过')
+            return src
+        notes.append(f'  ✓ {label}（替换已有 Linux 分支）')
+        return src[:found[0].start()] + new + src[found[0].end():]
+    if anchor in src:
+        notes.append(f'  ✓ {label}（{"收敛后重新写入" if collapsed else "原生树：新增"}）')
+        return src.replace(anchor, new + anchor, 1)
+    notes.append(f'  ✗ 未匹配: {label}（既没有已有分支，也找不到插入锚点）')
+    return src
+
+
+def apply_patch(app_dir: str) -> int:
     notes: list[str] = []
     main_js = f'{app_dir}/lib/main.js'
-    src = open(main_js, encoding='utf8').read()
+    src = Path(main_js).read_text(encoding='utf8')
 
     # --- 1a) 欢迎窗底色：透明 ---
     src = replace_once(
@@ -299,44 +360,10 @@ def main(app_dir: str) -> int:
         notes,
     )
 
-    # --- 1b) 欢迎窗 linux 分支：无边框 + 透明（移除右侧 overlay 按钮）---
-    src = replace_once(
-        src,
-        '''\t\t...platform === "linux" ? {
-\t\t\ttitleBarStyle: "hidden",
-\t\t\ttitleBarOverlay: {
-\t\t\t\theight: 42,
-\t\t\t\tsymbolColor: nativeTheme.shouldUseDarkColors ? "#f9fafb" : "#0f1115"
-\t\t\t}
-\t\t} : {},''',
-        '''\t\t...platform === "linux" ? {
-\t\t\ttitleBarStyle: "hidden",
-\t\t\tframe: false,
-\t\t\ttransparent: true
-\t\t} : {},''',
-        '欢迎窗：Linux 透明无边框（移除右上角 overlay 按钮）',
-        notes,
-    )
-
-    # --- 2) 主窗口：透明 + 无边框，交通灯改由 Web 层左置 ---
-    src = replace_once(
-        src,
-        '''		...process.platform === "linux" && primary ? {
-			titleBarStyle: "hidden",
-			titleBarOverlay: {
-				height: 40,
-				symbolColor: nativeTheme.shouldUseDarkColors ? "#f9fafb" : "#0f1115"
-			}
-		} : {},''',
-        '''		...process.platform === "linux" && primary ? {
-			titleBarStyle: "hidden",
-			transparent: true,
-			backgroundColor: "#00000000",
-			hasShadow: true
-		} : {},''',
-        '主窗口：Linux 透明无边框（交通灯左置）',
-        notes,
-    )
+    src = ensure_linux_block(src, LINUX_WELCOME_RE, WELCOME_LINUX,
+                             '\t\t...platform === "win32" ? {', '欢迎窗 Linux 无边框', notes)
+    src = ensure_linux_block(src, LINUX_MAIN_RE, MAIN_LINUX,
+                             '\t\t...process.platform === "win32" && primary ? {', '主窗口 Linux 无边框', notes)
 
     # --- 2b) 确保 screen 模块可用（maximize 兜底需要判断工作区）---
     src = replace_once(
@@ -346,6 +373,12 @@ def main(app_dir: str) -> int:
         '导入 screen 模块',
         notes,
     )
+
+    src = src.replace('window.isFullScreen() || (process.platform === "linux" && window.isMaximized())',
+                      'window.isFullScreen()')
+    src = src.replace('\t// which only this channel sets. Tiling compositors treat a "fullscreen" window\n'
+                      '\t// as merely maximised, so maximised also counts as fullscreen on Linux.',
+                      '\t// which only this channel sets. Maximized windows keep their traffic lights.')
 
     # --- 4) Linux 全屏事件（data-fullscreen 的来源）---
     src = replace_once(
@@ -360,12 +393,11 @@ def main(app_dir: str) -> int:
 \t}''',
         '''\t// Linux is included here: the renderer keys its fullscreen layout (traffic
 \t// lights hidden, collapse control at the leading edge) off `data-fullscreen`,
-\t// which only this channel sets. Tiling compositors treat a "fullscreen" window
-\t// as merely maximised, so maximised also counts as fullscreen on Linux.
+\t// which only this channel sets. Maximized windows keep their traffic lights.
 \tif (process.platform === "darwin" || process.platform === "win32" || process.platform === "linux") {
 \t\tconst sendFullscreen = () => {
 \t\t\tif (window.isDestroyed()) return;
-\t\t\tconst fullscreen = window.isFullScreen() || (process.platform === "linux" && window.isMaximized());
+\t\t\tconst fullscreen = window.isFullScreen();
 \t\t\twindow.webContents.send(DESKTOP_IPC.windowFullscreen, fullscreen);
 \t\t};
 \t\twindow.on("enter-full-screen", sendFullscreen);
@@ -377,6 +409,9 @@ def main(app_dir: str) -> int:
         'Linux 全屏/最大化事件注册',
         notes,
     )
+
+    src = src.replace('window.isFullScreen() || (process.platform === "linux" && window.isMaximized())',
+                      'window.isFullScreen()')
 
     # --- 3) 窗口控制 IPC ---
     anchor = '\tipcMain.handle(DESKTOP_IPC.directoryPick, async (event) => {'
@@ -413,12 +448,52 @@ def main(app_dir: str) -> int:
     else:
         src = replace_once(src, anchor, handler + anchor, '窗口控制 IPC 处理器', notes)
 
-    open(main_js, 'w', encoding='utf8').write(src)
+    Path(main_js).write_text(src, encoding='utf8')
     print(f'== {main_js}')
     notes.append(f'  · IPC 处理器共 {src.count("dsh-desktop:linux-window-control")} 处（应为 1）')
     print('\n'.join(notes))
     print(inject_preload(f'{app_dir}/lib/preload-app.cjs', MAIN_MARK_CALL, ''))
     print(inject_preload(f'{app_dir}/lib/preload-welcome.cjs', WELCOME_MARK_CALL, WELCOME_EXTRA_CSS))
+    return verify_end_state(app_dir)
+
+
+WELCOME_LINUX = '\t\t...platform === "linux" ? {\n\t\t\ttitleBarStyle: "hidden",\n\t\t\tframe: false,\n\t\t\ttransparent: true\n\t\t} : {},'
+MAIN_LINUX = '\t\t...process.platform === "linux" && primary ? {\n\t\t\ttitleBarStyle: "hidden",\n\t\t\tframe: false,\n\t\t\ttransparent: true,\n\t\t\tbackgroundColor: "#00000000",\n\t\t\thasShadow: true\n\t\t} : {},'
+
+def verify_end_state(app_dir):
+    main = Path(app_dir, 'lib/main.js').read_text()
+    if main.count('...platform === "linux" ? {') != 1 or main.count('...process.platform === "linux" && primary ? {') != 1:
+        return 1
+    for pattern in (LINUX_WELCOME_RE, LINUX_MAIN_RE):
+        match = pattern.search(main)
+        if match is None or 'frame: false' not in match.group() or 'titleBarOverlay' in match.group():
+            return 1
+    if re.search(r'import\s*\{[^}]*\bscreen\b[^}]*\}\s*from\s*"electron"', main) is None:
+        return 1
+    if main.count('dsh-desktop:linux-window-control') != 1 or 'const fullscreen = window.isFullScreen();' not in main:
+        return 1
+    for name in ('preload-app.cjs', 'preload-welcome.cjs'):
+        text = Path(app_dir, 'lib', name).read_text()
+        if text.count(CHROME_BEGIN) != 1 or text.count(CHROME_END) != 1 or 'syncTilingFullscreen' in text:
+            return 1
+        if name == "preload-app.cjs" and 'process.platform !== "win32" && process.platform !== "linux"' not in text:
+            return 1
+    return 0
+
+def main(app_dir: str) -> int:
+    import shutil
+    import tempfile
+    target = Path(app_dir) / "lib"
+    names = ("main.js", "preload-app.cjs", "preload-welcome.cjs")
+    with tempfile.TemporaryDirectory(prefix="dsh-chrome-patch-") as folder:
+        staged = Path(folder)
+        (staged / "lib").mkdir()
+        for name in names:
+            shutil.copy2(target / name, staged / "lib" / name)
+        if apply_patch(str(staged)) != 0:
+            return 1
+        for name in names:
+            shutil.copyfile(staged / "lib" / name, target / name)
     return 0
 
 
