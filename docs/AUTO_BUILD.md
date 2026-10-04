@@ -1,8 +1,9 @@
-# 自动构建 AppImage
+# 自动构建 Linux 安装包
 
-`auto-build.sh` 将官方 macOS arm64 dmg 载荷转换为 Linux AppImage，支持
-x86_64（`x64`）与 aarch64（`arm64`）。它自动准备依赖、生成应用树并打包；
-不改变现有窗口补丁。deb、pacman、rpm 仍由 `build-packages.sh` 生成。
+`auto-build.sh` 将官方 macOS arm64 dmg 载荷转换为 Linux 安装包。
+默认生成 AppImage；`--formats` 可选择 deb、RPM 和 pacman（pkg.tar.zst），或组合格式。
+它自动准备依赖、生成应用树并打包，不改变现有窗口补丁。
+架构选项沿用 x64/arm64；本文的多格式构建验证在 x64 上进行。
 
 ## 依赖与首次运行
 
@@ -33,13 +34,49 @@ sudo apt install bash python3 python3-pip python3-venv p7zip-full curl tar xz-ut
 Sharp/启动测试会跳过；应在目标机器上另行验证。首次运行需下载较大的 dmg、
 Electron 与运行时归档，并预留数 GB 的解包、应用树和打包空间。
 
+## 打包格式
+
+```bash
+./auto-build.sh --formats all                 # 全流程，生成五种安装包
+./auto-build.sh --formats deb                 # bundled 与 system 两种 deb
+./auto-build.sh --formats appimage,rpm        # 组合选择
+./auto-build.sh --only package --formats deb,pacman,rpm # 复用已有应用树
+```
+
+| 选项 | 产物 | 额外打包命令（Debian 软件包） |
+|---|---|---|
+| `appimage` | 内置 Electron 的 `.AppImage` | mksquashfs 与 type2 runtime，由 prepare 阶段准备 |
+| `deb` | 内置 Electron 的 bundled deb、使用系统 Electron 的 system deb | ar（binutils）、tar、xz |
+| `pacman` | 使用系统 Electron 的 `.pkg.tar.zst` | bsdtar（libarchive-tools）、gzip、zstd |
+| `rpm` | 内置 Electron 的 `.rpm` | rpmbuild（rpm） |
+| `all` | 上述全部，共五个安装包 | 上述工具合计 |
+
+仅在选择相应格式时才需要对应工具；只打 deb/RPM/pacman 不准备 AppImage runtime。
+选定打包阶段时先检查工具是否齐全，缺失则在下载和构建前退出，不自动安装软件包。
+`--dry-run` 仍可查看计划，会提示缺少的命令。
+
+```bash
+# 需要这些格式时，由你自行安装系统工具：
+sudo apt install binutils rpm libarchive-tools zstd
+```
+
+bundled deb、RPM 和 AppImage 内置 Electron；system deb 与 pacman 包需要另行安装
+兼容的系统 Electron。pacman 包依赖 `electron`；system deb 使用 Recommends 提示
+Electron，避免 Debian 官方仓库没有 Electron 时阻止安装。这些格式不会改变运行时载荷。
+
+应用版本从每棵应用树的 `resources/runtime/primary-runtime/runtime.json` 读取，
+Electron 描述读取应用树的 `version` 文件。deb 保留应用版本；pacman 用下划线替换
+版本中的连字符；RPM 将预发布部分放入 Release（例如 `0.2.0-rc.2` 转为
+Version `0.2.0`、Release `0.rc.2.1`）。不符合支持的版本形式会明确报错。
+每个安装包均附带使用相对文件名的 `.sha256`。
+
 ## 分阶段构建
 
 | 阶段 | 内容 |
 |---|---|
-| `prepare` | 获取 dmg，读取运行时版本，下载 Electron/Node/Python 与 AppImage 工具并校验 |
+| `prepare` | 获取 dmg，读取运行时版本，下载 Electron/Node/Python 并校验；选 AppImage 时准备其工具 |
 | `tree` | 展开 asar，替换 Linux 运行时与原生包，运行现有补丁，安装 Sharp worker 和 Linux CLI 启动器 |
-| `package` | 生成 AppDir，用 mksquashfs 和 type2 runtime 组装 AppImage，写出校验和 |
+| `package` | 按 --formats 生成安装包及校验和 |
 
 ```bash
 ./auto-build.sh --only prepare
@@ -51,15 +88,15 @@ Electron 与运行时归档，并预留数 GB 的解包、应用树和打包空�
 均按 prepare → tree → package 执行。后两个阶段需要前一阶段的缓存或应用树。
 完整流程中的 `tree` 阶段每次从 dmg 生成新树，避免重复应用非幂等补丁。
 
-需要其他格式时保留应用树，再运行原有脚本：
+旧入口继续兼容，仅对已有应用树打包，默认选择全部格式：
 
 ```bash
-./auto-build.sh
 ./build-packages.sh x64
+./build-packages.sh x64 --formats deb --store /tmp/dsh-store
 ```
 
-注意：原有 `build-packages.sh` 的版本元数据是固定的；使用其他 dmg 版本前应先核对
-该脚本。自动 AppImage 名称从 dmg 的 runtime.json 读取应用版本。
+它与一键构建共用相同打包实现，并接受相同选项。若 AppImage 工具缓存在独立 store，
+须传入同一 `--store`。只重打包时不必再次下载和生成应用树。
 
 ## 输入与缓存
 
@@ -93,7 +130,7 @@ Electron 与运行时归档，并预留数 GB 的解包、应用树和打包空�
 ```
 
 `--clean` 仅在所有选定阶段成功后执行，清理 dmg 解包目录、默认 pip 缓存、
-本次架构的打包暂存（包括 AppDir、squashfs 和日志）、node-pty 解包暂存、
+本次架构的打包暂存（包括 AppDir、squashfs、发行包根目录和日志）、node-pty 解包暂存、
 appimagetool 解包暂存，以及本次已打包架构的应用树。
 仅运行 `--only tree` 时保留作为该阶段输出的应用树，只清除其原生 Sharp 诊断备份。
 失败时保留现场；下载的 dmg、运行时归档、npm 包、工具、pip venv 与 `dist/` 成品始终保留。
@@ -152,7 +189,7 @@ chmod +x dist/DeepSeek-Harness-*.AppImage
 ## 维护与离线测试
 
 入口 `auto-build.sh` 负责参数和流程；`scripts/build/` 按职责分为
-common、download、prepare、tree、package 模块。`scripts/extract-asar.py` 展开
+common、download、prepare、tree、package、native-packages 模块。`scripts/extract-asar.py` 展开
 asar 与 unpacked 载荷；`scripts/npm-linux-swap.py` 转换平台包并检查遗留原生包。
 
 ```bash
@@ -162,4 +199,6 @@ python3 -m unittest discover -s tests -v
 ```
 
 离线测试覆盖参数错误、dry-run 无写入/无网络、双架构去重、本地 dmg、asar 载荷与
-异常输入、npm 版本/摘要/归档。完整构建及目标机器运行检查另行执行。
+异常输入、npm 版本/摘要/归档、格式选择、依赖预检查和包元数据。
+有对应工具时使用小型载荷实际生成 deb、RPM 与 pacman 包并检查内容；缺少时跳过
+该格式测试。完整构建及目标机器运行检查另行执行。

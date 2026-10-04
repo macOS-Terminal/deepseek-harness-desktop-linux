@@ -10,12 +10,13 @@ rel() { case "$1" in "$ROOT"/*) printf '%s' "${1#"$ROOT"/}" ;; *) printf '%s' "$
 
 usage() {
   cat <<'EOF'
-DeepSeek Harness — Linux AppImage 一键构建
+DeepSeek Harness — Linux 一键构建
 
 用法:
   ./auto-build.sh [选项] [x64|arm64|all]
 
 选项:
+  --formats 格式[,格式] appimage / deb / pacman / rpm / all（默认 appimage）
   --arch x64|arm64|all   目标架构（默认：本机架构）
   --only 阶段[,阶段]     prepare / tree / package 的子集（默认全跑）
   --proxy URL            自定义 GitHub 加速前缀
@@ -106,4 +107,33 @@ clean_after_success() {
       drop "$target"
     fi
   done
+}
+
+want_format() { case ",$FORMATS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+# Fail before downloads/staging when a selected distribution tool is unavailable.
+check_package_tools() {
+  local tools=(python3 tar xz sha256sum) missing=() tool
+  want_format deb && tools+=(ar) || true
+  want_format pacman && tools+=(bsdtar gzip zstd) || true
+  want_format rpm && tools+=(rpmbuild) || true
+  for tool in "${tools[@]}"; do have "$tool" || missing+=("$tool"); done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      warn "实际打包需要命令：${missing[*]}（Debian 的 rpm 提供 rpmbuild，libarchive-tools 提供 bsdtar）"
+    else
+      die "缺少打包命令：${missing[*]}；请自行安装（Debian: rpm / libarchive-tools / zstd / binutils）"
+    fi
+  fi
+}
+
+package_version() {
+  python3 - "$ROOT/out-$1/resources/runtime/primary-runtime/runtime.json" <<'PYEOF'
+import json, re, sys
+with open(sys.argv[1], encoding='utf8') as handle:
+    version = json.load(handle)['desktopVersion']
+if not isinstance(version, str) or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)*(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?', version):
+    raise SystemExit(f'不支持的应用版本：{version!r}')
+print(version)
+PYEOF
 }

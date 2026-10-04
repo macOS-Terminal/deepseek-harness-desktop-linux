@@ -34,6 +34,7 @@ class BuildCLI(unittest.TestCase):
         self.root = Path(self.temp.name) / 'repo'
         self.root.mkdir()
         shutil.copy2(ROOT / 'auto-build.sh', self.root)
+        shutil.copy2(ROOT / 'build-packages.sh', self.root)
         shutil.copytree(ROOT / 'scripts', self.root / 'scripts')
         self.bin = Path(self.temp.name) / 'bin'
         self.bin.mkdir()
@@ -88,6 +89,9 @@ class BuildCLI(unittest.TestCase):
         tree = self.root / 'out-x64'
         tree.mkdir()
         (tree / 'payload').write_bytes(b'app')
+        runtime = tree / 'resources/runtime/primary-runtime/runtime.json'
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text(json.dumps({'desktopVersion': '0.2.0-rc.2'}))
         backup = tree / 'resources/app/dsh/node_modules/.sharp-native-backup'
         backup.mkdir(parents=True)
         (backup / 'diagnostic').write_bytes(b'backup')
@@ -132,6 +136,107 @@ class BuildCLI(unittest.TestCase):
         for path in ['others/dmg', 'dl/pip-cache', 'work/x64/DeepSeek-Harness.AppDir']:
             self.assertTrue((store / path).exists(), path)
         self.assertTrue((self.root / 'out-x64').exists())
+
+    def test_format_selection_and_legacy_entry(self):
+        result = self.run_cli('--dry-run', '--only', 'package', '--formats', 'deb,deb')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count('打包 deb（'), 1)
+        self.assertNotIn('阶段 3/3 打包 AppImage', result.stdout)
+        self.assertNotIn('打包 rpm（', result.stdout)
+        result = subprocess.run(['bash', str(self.root / 'build-packages.sh'), 'x64', '--dry-run'],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for format in ['appimage', 'deb', 'pacman', 'rpm']:
+            self.assertIn(format, result.stdout)
+
+    def test_non_appimage_prepare_skips_appimage_downloads(self):
+        result = self.run_cli('--dry-run', '--only', 'prepare', '--formats', 'deb')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('AppImage/type2-runtime', result.stdout)
+        self.assertNotIn('AppImage/appimagetool', result.stdout)
+        self.assertFalse(self.marker.exists())
+
+    def test_invalid_format_fails_before_writes(self):
+        for format in ['zip', 'deb,', 'deb,,rpm']:
+            result = self.run_cli('--formats', format)
+            self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / 'dl').exists())
+
+    def test_missing_format_tool_fails_before_downloads(self):
+        for name in ['bash', 'dirname', 'uname', 'python3', 'tar', 'xz', 'sha256sum']:
+            (self.bin / name).symlink_to(shutil.which(name))
+        self.env['PATH'] = str(self.bin)
+        result = self.run_cli('--formats', 'rpm')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('rpmbuild', result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertFalse((self.root / 'dl').exists())
+
+    def native_fixture(self):
+        store = self.package_fixture()
+        tree = self.root / 'out-x64'
+        (tree / 'version').write_text('44.4.5')
+        for name in ['deepseek-harness', 'chrome-sandbox']:
+            (tree / name).write_text('#!/bin/sh\nexit 0\n')
+            (tree / name).chmod(0o755)
+        runtime = tree / 'resources/runtime/primary-runtime/runtime.json'
+        runtime.write_text(json.dumps({'desktopVersion': '1.3.7-rc.4'}))
+        return store
+
+    @unittest.skipUnless(shutil.which('dpkg-deb') and shutil.which('ar'), 'deb tools unavailable')
+    def test_real_deb_metadata_payload_and_checksums(self):
+        store = self.native_fixture()
+        result = self.run_cli('--only', 'package', '--formats', 'deb', '--store', str(store))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for variant in ['bundled', 'system']:
+            archive = self.root / 'dist' / f'deepseek-harness_1.3.7-rc.4_amd64.{variant}.deb'
+            fields = subprocess.check_output(['dpkg-deb', '-f', str(archive)], text=True)
+            self.assertIn('Version: 1.3.7-rc.4', fields)
+            self.assertIn('Architecture: amd64', fields)
+            self.assertIn('Description:', fields)
+            if variant == 'bundled':
+                self.assertIn('Electron 44.4.5', fields)
+            self.assertEqual('Recommends:' in fields, variant == 'system')
+            extracted = Path(self.temp.name) / variant
+            subprocess.run(['dpkg-deb', '-x', str(archive), str(extracted)], check=True)
+            resources = extracted / 'usr/lib/deepseek-harness/resources'
+            self.assertTrue((resources / 'runtime/primary-runtime/runtime.json').exists())
+            desktop = extracted / 'usr/share/applications/deepseek-harness.desktop'
+            self.assertEqual(desktop.stat().st_mode & 0o777, 0o644)
+            self.assertFalse((resources / 'app/dsh/node_modules/.sharp-native-backup').exists())
+            self.assertEqual((extracted / 'usr/lib/deepseek-harness/deepseek-harness').exists(), variant == 'bundled')
+            subprocess.run(['sha256sum', '-c', archive.name + '.sha256'], cwd=archive.parent,
+                           check=True, stdout=subprocess.DEVNULL)
+        self.assertTrue((store / 'work/x64/packages/deb-bundled').exists())
+        self.assertFalse(list((self.root / 'dist').glob('*.AppImage')))
+
+    @unittest.skipUnless(shutil.which('bsdtar') and shutil.which('zstd'), 'pacman tools unavailable')
+    def test_real_pacman_metadata_and_archive(self):
+        store = self.native_fixture()
+        result = self.run_cli('--only', 'package', '--formats', 'pacman', '--store', str(store))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        archive = self.root / 'dist/deepseek-harness-desktop-1.3.7_rc.4-1-x86_64.pkg.tar.zst'
+        info = subprocess.check_output(['bsdtar', '-xOf', str(archive), '.PKGINFO'], text=True)
+        self.assertIn('pkgver = 1.3.7_rc.4-1', info)
+        self.assertIn('arch = x86_64', info)
+        members = subprocess.check_output(['bsdtar', '-tf', str(archive)], text=True)
+        self.assertIn('.MTREE.gz', members)
+        self.assertIn('.INSTALL', members)
+        self.assertNotIn('.sharp-native-backup', members)
+
+    @unittest.skipUnless(shutil.which('rpmbuild') and shutil.which('rpm'), 'rpm tools unavailable')
+    def test_real_rpm_metadata_and_payload(self):
+        store = self.native_fixture()
+        result = self.run_cli('--only', 'package', '--formats', 'rpm', '--store', str(store))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        archive = self.root / 'dist/deepseek-harness-1.3.7-0.rc.4.1.x86_64.rpm'
+        info = subprocess.check_output(['rpm', '--dbpath', str(store / 'work/x64/packages/rpmbuild/rpmdb'), '-qp', '--qf', '%{VERSION} %{RELEASE} %{ARCH}', str(archive)], text=True)
+        self.assertEqual(info, '1.3.7 0.rc.4.1 x86_64')
+        members = subprocess.check_output(['rpm', '--dbpath', str(store / 'work/x64/packages/rpmbuild/rpmdb'), '-qpl', str(archive)], text=True)
+        self.assertIn('/usr/lib/deepseek-harness/deepseek-harness', members)
+        self.assertNotIn('.sharp-native-backup', members)
+        top = store / 'work/x64/packages/rpmbuild'
+        self.assertTrue(list(top.glob('BUILD/**/BUILDROOT/usr/bin/deepseek-harness')))
 
 
 class AsarExtraction(unittest.TestCase):

@@ -9,6 +9,9 @@
 
 ### 新增
 
+- 一键入口支持 `--formats appimage,deb,pacman,rpm` 与 `all`，按所选格式预检查工具。
+- 两个入口共用发行包构建模块，版本来自应用树，各格式提供 SHA256 文件并保留暂存。
+
 - 一键 AppImage 构建入口 `auto-build.sh`，支持本机架构与 x64/arm64 双架构。
 - 按 prepare/tree/package 拆分的构建模块、asar 解包与同版本原生依赖替换工具。
 - 本地或 URL dmg、独立缓存目录、镜像回退、Electron/Node 校验和验证、Sharp 自检。

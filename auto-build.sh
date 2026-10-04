@@ -49,13 +49,15 @@ DMG_DIR="$OTHERS/dmg"
 ARCHES=(); ONLY="prepare,tree,package"; FORCE=0; CLEAN=0; JOBS=4
 WORK=""; VERIFY=1; DRY_RUN=0; CHECK_SHA=1; ALLOW_DRIFT=0
 DMG_URL_OVERRIDE=""
+FORMATS=appimage
 
-for module in common download prepare tree package; do
+for module in common download prepare tree package native-packages; do
   source "$ROOT/scripts/build/$module.sh"
 done
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --formats)  FORMATS="${2:?--formats 需要一个值}"; shift 2 ;;
     --arch)     ARCHES+=("${2:?--arch 需要一个值}"); shift 2 ;;
     --only)     ONLY="${2:?--only 需要一个值}"; shift 2 ;;
     --proxy)    GH_PROXY="${2:?--proxy 需要一个值}"; shift 2 ;;
@@ -101,6 +103,23 @@ case "$ONLY" in ,*|*,|*,,*) die "--only 包含空阶段" ;; esac
 for phase in "${phases[@]}"; do
   case "$phase" in prepare|tree|package) ;; *) die "未知阶段：$phase" ;; esac
 done
+
+IFS=, read -r -a requested_formats <<<"$FORMATS"
+case "$FORMATS" in ''|,*|*,|*,,*) die "--formats 包含空格式" ;; esac
+selected_formats=()
+for format in "${requested_formats[@]}"; do
+  case "$format" in
+    all) selected_formats+=(appimage deb pacman rpm) ;;
+    appimage|deb|pacman|rpm) selected_formats+=("$format") ;;
+    *) die "未知打包格式：$format" ;;
+  esac
+done
+FORMATS=,
+for format in "${selected_formats[@]}"; do
+  case "$FORMATS" in *",$format,"*) ;; *) FORMATS+="$format," ;; esac
+done
+FORMATS="${FORMATS#,}"; FORMATS="${FORMATS%,}"
+if want_phase package; then check_package_tools; fi
 
 # --store：把依赖下载（dl/）、官方 dmg 与解包物（others/）、工具（tools/）整体搬到别处。
 # 这个脚本会删除 store 下的解包物，所以先拒绝系统目录与相对路径。
@@ -152,10 +171,11 @@ export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$DL/pip-cache}"
 SEVENZ="$(command -v 7z || command -v 7za || true)"
 
 # =================================================================== 主流程 ==
-say "DeepSeek Harness — Linux AppImage 构建"
+say "DeepSeek Harness — Linux 构建"
 step "仓库:   $ROOT"
 step "架构:   ${ARCHES[*]}（host=$HOST_ARCH）"
 step "阶段:   $ONLY"
+step "格式:   $FORMATS"
 step "加速:   ${GH_PROXY:-（直连 GitHub）}"
 step "暂存:   $WORK_BASE/<arch>"
 
@@ -167,18 +187,21 @@ for arch in "${ARCHES[@]}"; do
   fi
 done
 for arch in "${ARCHES[@]}"; do
-  if want_phase package; then build_appimage "$arch"; fi
+  if want_phase package; then
+    if want_format appimage; then build_appimage "$arch"; fi
+    if want_format deb || want_format pacman || want_format rpm; then build_native_packages "$arch"; fi
+  fi
 done
 
 clean_after_success
 
 say "全部完成"
 if [ -d "$ROOT/dist" ]; then ls -la "$ROOT/dist"; fi
-cat <<EOF
-
-产物在 dist/ 下。运行方式：
-  chmod +x dist/DeepSeek-Harness-*.AppImage
-  ./dist/DeepSeek-Harness-*.AppImage
+step "产物在 dist/ 下，校验：cd dist && sha256sum -c *.sha256"
+if want_format appimage; then
+  cat <<EOF
+运行 AppImage：chmod +x dist/DeepSeek-Harness-*.AppImage
+./dist/DeepSeek-Harness-*.AppImage
 需要 FUSE；没有 FUSE 时加 --appimage-extract-and-run。
-校验：cd dist && sha256sum -c *.sha256
 EOF
+fi

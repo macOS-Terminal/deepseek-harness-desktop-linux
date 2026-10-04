@@ -3,7 +3,7 @@ build_appimage() {  # <arch>
   local arch="$1"
   local out="$ROOT/out-$arch"
   local target; target="$(arch_target "$arch")"
-  local appver; appver="$(cat "$OTHERS/.app-version" 2>/dev/null || echo 0.2.0-rc.2)"
+  local appver
   local work="$WORK_BASE/$arch"
   local appdir="$work/DeepSeek-Harness.AppDir"
   local mksquashfs="$TOOLS/usr/bin/mksquashfs"
@@ -11,6 +11,7 @@ build_appimage() {  # <arch>
 
   say "阶段 3/3 打包 AppImage（$target）"
   if [ "$DRY_RUN" -eq 1 ]; then step "[dry-run] mksquashfs + runtime → dist/"; return 0; fi
+  appver="$(package_version "$arch")"
   [ -d "$out" ] || die "缺少应用树 $out（先跑 --only tree）"
   [ -x "$mksquashfs" ] || die "缺少 mksquashfs（$mksquashfs），先跑 --only prepare"
   [ -s "$runtime" ] || die "缺少 AppImage runtime（$runtime）"

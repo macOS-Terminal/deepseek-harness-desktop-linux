@@ -114,16 +114,19 @@ phase_prepare() {
   done
   fetch_par "${groups[@]}"
 
-  # 4) AppImage 工具链（appimagetool 按主机架构，runtime 按目标架构）
-  local tool_groups=() at_name; at_name="$(appimagetool_name)"
-  for arch in "${ARCHES[@]}"; do
-    tool_groups+=("$TOOLS/runtime-$(arch_target "$arch")|$(gh "$RUNTIME_REPO/runtime-$(arch_target "$arch")")|$RUNTIME_REPO/runtime-$(arch_target "$arch")")
-  done
-  if ! mksquashfs_works "$TOOLS/usr/bin/mksquashfs"; then
-    tool_groups+=("$DL/$at_name|$(gh "$APPIMAGETOOL_BASE/$at_name")|$APPIMAGETOOL_BASE/$at_name")
+  if want_format appimage; then
+    # 4) AppImage 工具链（appimagetool 按主机架构，runtime 按目标架构）
+    local tool_groups=() at_name; at_name="$(appimagetool_name)"
+    for arch in "${ARCHES[@]}"; do
+      tool_groups+=("$TOOLS/runtime-$(arch_target "$arch")|$(gh "$RUNTIME_REPO/runtime-$(arch_target "$arch")")|$RUNTIME_REPO/runtime-$(arch_target "$arch")")
+    done
+    if ! mksquashfs_works "$TOOLS/usr/bin/mksquashfs"; then
+      tool_groups+=("$DL/$at_name|$(gh "$APPIMAGETOOL_BASE/$at_name")|$APPIMAGETOOL_BASE/$at_name")
+    fi
+    [ "${#tool_groups[@]}" -eq 0 ] || fetch_par "${tool_groups[@]}"
+    provision_mksquashfs
+
   fi
-  [ "${#tool_groups[@]}" -eq 0 ] || fetch_par "${tool_groups[@]}"
-  provision_mksquashfs
 
   # 5) 校验：归档完整性 + 官方 SHA256SUMS（清单按版本缓存，缺条目即失败）
   if [ "$DRY_RUN" -eq 1 ]; then say "阶段 1/3 完成（dry-run 未实际下载）"; return 0; fi
