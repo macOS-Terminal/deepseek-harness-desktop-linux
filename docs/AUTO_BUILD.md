@@ -153,6 +153,10 @@ node-pty 补充同版本的 Linux prebuild。没有对应版本时停止，`--al
 Electron 与 Node 必须通过官方 SHA256SUMS 比对；`--no-sha256` 可显式跳过。
 Python 和 AppImage 工具目前不比对发布方摘要；默认 dmg 也没有配置发布方摘要。
 
+所有应用树完成后检查 Electron、Node、Python 及 ELF 原生依赖的目标架构；
+跨架构构建也执行此静态检查。指纹补丁通过 ELF 符号定位 Matches 函数，
+遇到未知机器类型、缺失/歧义符号或未知指令序言时中止，不猜测邻近偏移。
+
 本机架构应用树运行 Sharp worker 自检，失败时中止；`--no-verify` 可显式跳过。
 有 xvfb-run 时另做启动冒烟；未看到 web-ready 日志会警告并保留日志，不当作 Sharp
 自检成功的依据。自动构建不验证 KDE 标题栏与桌面毛玻璃的视觉效果。
@@ -202,3 +206,26 @@ python3 -m unittest discover -s tests -v
 异常输入、npm 版本/摘要/归档、格式选择、依赖预检查和包元数据。
 有对应工具时使用小型载荷实际生成 deb、RPM 与 pacman 包并检查内容；缺少时跳过
 该格式测试。完整构建及目标机器运行检查另行执行。
+
+## ARM64 构建与验证边界
+
+```bash
+./auto-build.sh --arch arm64 --formats all
+```
+
+在 x86_64 上可以下载 ARM64 载荷并生成 aarch64 AppImage、arm64 deb、
+aarch64 pacman/RPM；mksquashfs 使用主机版本，AppImage runtime 使用目标版本。
+本仓库已对 0.2.0-rc.2 / Electron 44.4.5 完成 ARM64 应用树的架构检查与上述
+格式打包验证。跨架构构建不会将静态检查当作运行自检成功。
+
+要验证目标机图片链路，请在 ARM64 Linux 上运行：
+
+```bash
+DSH_DESKTOP_RESOURCES_DIR="$PWD/out-arm64/resources" ELECTRON_RUN_AS_NODE=1 \
+  ./out-arm64/deepseek-harness ./image-worker-src/verify-image-worker.cjs
+./out-arm64/deepseek-harness
+```
+
+当前 x86_64 验证环境虽有 qemu-aarch64，但没有 ARM64 动态加载器和系统库；
+未声称 ARM64 GUI 或 Sharp 运行验收通过。系统 Electron 版发行包还需目标发行版
+提供兼容的 ARM64 Electron。

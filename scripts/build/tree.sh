@@ -236,6 +236,7 @@ PYEOF
   # Native Sharp backup stays available for diagnostics; AppImage packaging excludes it.
   rewrite_cli_launcher "$out/resources"
   normalize_modes "$out"
+  python3 "$ROOT/scripts/verify-architecture.py" "$out" "$arch"
   say "应用树完成: out-$arch（$(human "$out")）"
 }
 
@@ -245,7 +246,7 @@ verify_tree() {  # <arch>
   [ "$DRY_RUN" -eq 1 ] && return 0
   local electron="$out/deepseek-harness"
   if [ "$arch" != "$HOST_ARCH" ]; then
-    say "自检 out-$arch：目标架构与本机（$HOST_ARCH）不同，需要 qemu 才能跑，跳过"
+    say "自检 out-$arch：目标架构与本机（$HOST_ARCH）不同，ELF 静态检查已通过；跳过运行自检（需目标机运行）"
     return 0
   fi
   say "自检 out-$arch"
