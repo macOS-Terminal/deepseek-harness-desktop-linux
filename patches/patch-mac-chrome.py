@@ -218,7 +218,10 @@ html[data-dsh-mac-chrome] [class*="_sidebarCol"] {
    css/opaque fallback: the ::before colour wash), so the strip always darkens
    towards the fill and then snaps back at the footer edge — a hard 24px band above
    "更多" in either mode. Mirror the bundle's own darwin decision unconditionally. */
-html[data-dsh-mac-chrome] [class*="_fade"] { display: none !important; }
+/* Scope this to the sidebar: process-scroll bodies also acquire _fadeTop /
+   _fadeBottom classes. Hiding those bodies makes ResizeObserver clear their
+   scroll edges, then show them again, causing an endless layout feedback loop. */
+html[data-dsh-mac-chrome] [class*="_sidebarCol"] [class*="_fade"] { display: none !important; }
 /* Traffic lights where macOS puts them: 16px in, 18px down, 12px dots. */
 #dsh-mac-lights {
 	position: fixed; left: 16px; top: 18px; z-index: 2147483646;
@@ -557,8 +560,9 @@ def verify_end_state(app_dir: str) -> int:
         ('preload-app 注入了当前版本', CHROME_BEGIN in pre_app),
         ('preload-welcome 注入了当前版本', CHROME_BEGIN in pre_welcome),
         ('preload-app 有 installLinuxChrome', 'installLinuxChrome' in pre_app),
-        ('列表淡出层已隐藏（镜像 darwin 规则，任何材质模式）',
-         'html[data-dsh-mac-chrome] [class*="_fade"] { display: none !important; }' in injected),
+        ('仅侧栏列表淡出层隐藏（不影响工作步骤滚动）',
+         '[class*="_sidebarCol"] [class*="_fade"] { display: none !important; }' in injected
+         and 'html[data-dsh-mac-chrome] [class*="_fade"] { display: none' not in injected),
         ('preload-welcome 有 installLinuxChrome', 'installLinuxChrome' in pre_welcome),
         ('preload-welcome 只声明一次 VIBRANCY_ID',
          len(re.findall(r'(?:const|let|var)\s+VIBRANCY_ID', pre_welcome)) == 1),
