@@ -14,7 +14,7 @@ build_native_packages() {
     arm64) DEBARCH=arm64; PKGARCH=aarch64; RPMARCH=aarch64 ;;
   esac
   if [ "$DRY_RUN" -eq 1 ]; then
-    want_format deb && step "[dry-run] 打包 deb（bundled + system，$DEBARCH）" || true
+    want_format deb && step "[dry-run] 打包 deb（$([ "$ELECTRON_MODE" = both ] && echo 'bundled + system' || echo "$ELECTRON_MODE")，$DEBARCH）" || true
     want_format pacman && step "[dry-run] 打包 pacman（pkg.tar.zst，$PKGARCH）" || true
     want_format rpm && step "[dry-run] 打包 rpm（$RPMARCH）" || true
     return 0
@@ -30,7 +30,10 @@ build_native_packages() {
   mkdir -p "$WORK" "$OUT"
   prepare_package_metadata
   say "阶段 3/3 打包发行包（$arch，应用版本 $VER）"
-  if want_format deb; then build_deb bundled; build_deb system; fi
+  if want_format deb; then
+    if [ "$ELECTRON_MODE" != system ]; then build_deb bundled; fi
+    if [ "$ELECTRON_MODE" != bundled ]; then build_deb system; fi
+  fi
   if want_format pacman; then build_pkgtar; fi
   if want_format rpm; then build_rpm; fi
 }
@@ -146,8 +149,8 @@ exit 0
 P
   chmod 755 "$d/control/postinst" "$d/control/postrm"
   echo "2.0" > "$d/debian-binary"
-  ( cd "$d" && XZ_OPT="${XZ_OPT:--T2}" tar --owner=0 --group=0 --numeric-owner -cJf data.tar.xz -C data . \
-    && XZ_OPT="${XZ_OPT:--T2}" tar --owner=0 --group=0 --numeric-owner -cJf control.tar.xz -C control . \
+  ( cd "$d" && XZ_OPT="$(package_xz_options)" tar --owner=0 --group=0 --numeric-owner -cJf data.tar.xz -C data . \
+    && XZ_OPT="$(package_xz_options)" tar --owner=0 --group=0 --numeric-owner -cJf control.tar.xz -C control . \
     && ar rc "$OUT/deepseek-harness_${VER}_${DEBARCH}.${variant}.deb" debian-binary control.tar.xz data.tar.xz )
   write_package_checksum "deepseek-harness_${VER}_${DEBARCH}.${variant}.deb"
   echo "  ✓ deb ($variant): $(du -h "$OUT/deepseek-harness_${VER}_${DEBARCH}.${variant}.deb" | cut -f1)"
@@ -222,7 +225,7 @@ EOF
     rc=(--rcfile /usr/lib/rpm/rpmrc --rcfile "$localrc")
   fi
   TMPDIR="$top/tmp" rpmbuild "${rc[@]}" --define "_topdir $top" --define "_tmppath $top/tmp" --define "_dbpath $top/rpmdb" \
-    --define "_binary_payload w6.xzdio" --target "${RPMARCH}-linux" --noclean -bb "$top/SPECS/deepseek-harness.spec" \
+    --define "_binary_payload w6${PACKAGE_JOBS:+T$PACKAGE_JOBS}.xzdio" --target "${RPMARCH}-linux" --noclean -bb "$top/SPECS/deepseek-harness.spec" \
     >"$WORK/rpm.log" 2>&1 || { tail -20 "$WORK/rpm.log"; return 1; }
   local built; built=$(find "$top/RPMS" -name '*.rpm' | head -1)
   cp "$built" "$OUT/deepseek-harness-${RPM_VERSION}-${RPM_RELEASE}.${RPMARCH}.rpm"
@@ -278,7 +281,7 @@ EOF
     && gzip -9 -f .MTREE )
   local name="deepseek-harness-desktop-${VER_PKG}-1-${PKGARCH}.pkg.tar.zst"
   ( cd "$r" && tar --owner=0 --group=0 --numeric-owner --sort=name -cf - .PKGINFO .INSTALL .MTREE.gz usr ) \
-    | zstd -19 -T4 -o "$OUT/$name" -q -f
+    | zstd -19 -T"$(package_threads 4)" -o "$OUT/$name" -q -f
   write_package_checksum "$name"
   echo "  ✓ pkg.tar.zst: $(du -h "$OUT/$name" | cut -f1)"
 }

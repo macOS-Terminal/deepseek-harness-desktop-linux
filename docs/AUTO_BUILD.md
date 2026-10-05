@@ -39,6 +39,8 @@ Electron 与运行时归档，并预留数 GB 的解包、应用树和打包空�
 ```bash
 ./auto-build.sh --formats all                 # 全流程，生成五种安装包
 ./auto-build.sh --formats deb                 # bundled 与 system 两种 deb
+./auto-build.sh --formats deb --electron bundled --package-jobs 2 # 仅 bundled deb，2 个压缩线程
+./auto-build.sh --formats deb --electron system  # 仅 system deb
 ./auto-build.sh --formats appimage,rpm        # 组合选择
 ./auto-build.sh --only package --formats deb,pacman,rpm # 复用已有应用树
 ```
@@ -50,6 +52,21 @@ Electron 与运行时归档，并预留数 GB 的解包、应用树和打包空�
 | `pacman` | 使用系统 Electron 的 `.pkg.tar.zst` | bsdtar（libarchive-tools）、gzip、zstd |
 | `rpm` | 内置 Electron 的 `.rpm` | rpmbuild（rpm） |
 | `all` | 上述全部，共五个安装包 | 上述工具合计 |
+
+`--electron bundled|system|both` 筛选本次生成的安装包，默认 `both` 保留原有行为。
+deb 支持两种类型；AppImage 与 RPM 只提供 bundled，pacman 只提供 system。
+例如 `--formats all --electron bundled` 生成 AppImage、bundled deb 和 RPM；
+`--formats all --electron system` 生成 system deb 和 pacman。
+不兼容的格式会从本次计划中跳过；若没有可生成的格式（如 AppImage + system），
+脚本在下载或写入前报错。`dist/` 中以前生成的其他类型安装包不会自动删除。
+
+`--package-jobs N` 设置本次打包的压缩线程数，必须是正整数；它与控制并行下载的
+`--jobs N` 独立。它作用于 AppImage 的 mksquashfs、deb 的 xz、pacman 的 zstd，
+以及 RPM 的 xz payload。打包格式仍顺序执行，归档复制、校验等步骤不因此并行。
+未指定时沿用原有设置：AppImage 使用 `nproc`（取不到时 4），deb 使用
+`XZ_OPT`（未设置时 `-T2`），pacman 使用 4 个线程，RPM 使用压缩器默认值。
+指定后 deb 的线程数优先于 `XZ_OPT` 中的线程参数，其余压缩选项仍保留。
+压缩器可能根据输入大小和可用内存使用更少线程。
 
 仅在选择相应格式时才需要对应工具；只打 deb/RPM/pacman 不准备 AppImage runtime。
 选定打包阶段时先检查工具是否齐全，缺失则在下载和构建前退出，不自动安装软件包。
@@ -92,7 +109,7 @@ Version `0.2.0`、Release `0.rc.2.1`）。不符合支持的版本形式会明�
 
 ```bash
 ./build-packages.sh x64
-./build-packages.sh x64 --formats deb --store /tmp/dsh-store
+./build-packages.sh x64 --formats deb --electron bundled --package-jobs 2 --store /tmp/dsh-store
 ```
 
 它与一键构建共用相同打包实现，并接受相同选项。若 AppImage 工具缓存在独立 store，

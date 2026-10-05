@@ -17,6 +17,8 @@ DeepSeek Harness — Linux 一键构建
 
 选项:
   --formats 格式[,格式] appimage / deb / pacman / rpm / all（默认 appimage）
+  --electron 模式        bundled / system / both（默认 both）；筛选相应类型的安装包
+  --package-jobs N       打包压缩线程数（正整数；默认沿用各格式设置）
   --arch x64|arm64|all   目标架构（默认：本机架构）
   --only 阶段[,阶段]     prepare / tree / package 的子集（默认全跑）
   --proxy URL            自定义 GitHub 加速前缀
@@ -110,6 +112,16 @@ clean_after_success() {
       drop "$target"
     fi
   done
+}
+
+# A requested package thread count takes precedence over format defaults.
+package_threads() { printf '%s' "${PACKAGE_JOBS:-$1}"; }
+package_xz_options() {
+  if [ -n "$PACKAGE_JOBS" ]; then
+    printf '%s' "${XZ_OPT:-} -T$PACKAGE_JOBS"
+  else
+    printf '%s' "${XZ_OPT:--T2}"
+  fi
 }
 
 want_format() { case ",$FORMATS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }

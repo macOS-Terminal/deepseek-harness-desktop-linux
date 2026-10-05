@@ -50,6 +50,8 @@ ARCHES=(); ONLY="prepare,tree,package"; FORCE=0; CLEAN=0; JOBS=4
 WORK=""; VERIFY=1; DRY_RUN=0; CHECK_SHA=1; ALLOW_DRIFT=0
 DMG_URL_OVERRIDE=""
 FORMATS=appimage
+ELECTRON_MODE=both
+PACKAGE_JOBS=""
 TRANSLUCENT_SIDEBAR="${DSH_TRANSLUCENT_SIDEBAR:-0}"
 case "$TRANSLUCENT_SIDEBAR" in
   1|true|yes|on) TRANSLUCENT_SIDEBAR=1 ;;
@@ -65,6 +67,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --translucent-sidebar) TRANSLUCENT_SIDEBAR=1; shift ;;
     --opaque-sidebar) TRANSLUCENT_SIDEBAR=0; shift ;;
+    --electron) ELECTRON_MODE="${2:?--electron 需要一个值}"; shift 2 ;;
+    --package-jobs) PACKAGE_JOBS="${2:?--package-jobs 需要一个值}"; shift 2 ;;
     --formats)  FORMATS="${2:?--formats 需要一个值}"; shift 2 ;;
     --arch)     ARCHES+=("${2:?--arch 需要一个值}"); shift 2 ;;
     --only)     ONLY="${2:?--only 需要一个值}"; shift 2 ;;
@@ -105,6 +109,10 @@ for arch in "${EXPANDED[@]}"; do
   case " ${ARCHES[*]-} " in *" $arch "*) ;; *) ARCHES+=("$arch") ;; esac
 done
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "--jobs 需要正整数"
+if [ -n "$PACKAGE_JOBS" ]; then
+  [[ "$PACKAGE_JOBS" =~ ^[1-9][0-9]*$ ]] || die "--package-jobs 需要正整数"
+fi
+case "$ELECTRON_MODE" in bundled|system|both) ;; *) die "--electron 需要 bundled / system / both" ;; esac
 IFS=, read -r -a phases <<<"$ONLY"
 [ -n "$ONLY" ] || die "--only 不能为空"
 case "$ONLY" in ,*|*,|*,,*) die "--only 包含空阶段" ;; esac
@@ -122,11 +130,16 @@ for format in "${requested_formats[@]}"; do
     *) die "未知打包格式：$format" ;;
   esac
 done
+# Filter unsupported format/mode pairs before downloads or tool checks.
 FORMATS=,
 for format in "${selected_formats[@]}"; do
+  case "$format:$ELECTRON_MODE" in
+    appimage:system|rpm:system|pacman:bundled) continue ;;
+  esac
   case "$FORMATS" in *",$format,"*) ;; *) FORMATS+="$format," ;; esac
 done
 FORMATS="${FORMATS#,}"; FORMATS="${FORMATS%,}"
+[ -n "$FORMATS" ] || die "所选格式不提供 $ELECTRON_MODE 包（AppImage/RPM: bundled；pacman: system；deb: 两者）"
 if want_phase package; then check_package_tools; fi
 
 # --store：把依赖下载（dl/）、官方 dmg 与解包物（others/）、工具（tools/）整体搬到别处。
@@ -184,6 +197,8 @@ step "仓库:   $ROOT"
 step "架构:   ${ARCHES[*]}（host=$HOST_ARCH）"
 step "阶段:   $ONLY"
 step "格式:   $FORMATS"
+step "Electron: $ELECTRON_MODE"
+step "打包线程: ${PACKAGE_JOBS:-各格式默认}"
 step "侧栏:   $([ "$TRANSLUCENT_SIDEBAR" -eq 1 ] && echo 自动系统模糊或实色磨砂回退 || echo 不透明实色)"
 step "加速:   ${GH_PROXY:-（直连 GitHub）}"
 step "暂存:   $WORK_BASE/<arch>"

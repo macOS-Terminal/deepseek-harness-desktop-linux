@@ -47,9 +47,10 @@ APPRUN
 
   local squash="$work/app.squashfs"
   rm -f "$squash"
-  step "mksquashfs（zstd -19，$(nproc 2>/dev/null || echo 4) 线程）"
+  local threads; threads="$(package_threads "$(nproc 2>/dev/null || echo 4)")"
+  step "mksquashfs（zstd -19，$threads 线程）"
   "$mksquashfs" "$appdir" "$squash" -root-owned -noappend -comp zstd \
-    -Xcompression-level 19 -b 1M -processors "$(nproc 2>/dev/null || echo 4)" >/dev/null \
+    -Xcompression-level 19 -b 1M -processors "$threads" >/dev/null \
     || die "mksquashfs 失败"
 
   local name="DeepSeek-Harness-${appver}-${target}.AppImage"

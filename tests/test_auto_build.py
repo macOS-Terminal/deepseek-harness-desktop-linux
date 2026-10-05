@@ -67,6 +67,8 @@ class BuildCLI(unittest.TestCase):
     def test_invalid_options_fail_before_writes(self):
         for args in [('--unknown',), ('--only', 'bogus'), ('--only', 'tree,'),
                      ('--jobs', '0'), ('--jobs', 'abc'), ('--arch', 'sparc'),
+                     ('--package-jobs', '0'), ('--package-jobs', '-1'), ('--package-jobs', 'abc'),
+                     ('--electron', 'invalid'), ('--formats', 'appimage', '--electron', 'system'),
                      ('--store', '/tmp/../etc'), ('--work', '/tmp/../usr'),
                      ('--work', 'relative')]:
             result = self.run_cli(*args)
@@ -151,6 +153,60 @@ class BuildCLI(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for format in ['appimage', 'deb', 'pacman', 'rpm']:
             self.assertIn(format, result.stdout)
+        result = subprocess.run(['bash', str(self.root / 'build-packages.sh'), 'x64', '--dry-run',
+                                 '--formats', 'deb', '--electron', 'system', '--package-jobs', '2'],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('打包 deb（system，', result.stdout)
+        self.assertIn('打包线程: 2', result.stdout)
+
+    def test_electron_mode_filters_supported_formats(self):
+        for mode, included, excluded in [
+                ('bundled', ['appimage', 'deb', 'rpm'], ['pacman']),
+                ('system', ['deb', 'pacman'], ['appimage', 'rpm'])]:
+            result = self.run_cli('--dry-run', '--only', 'package', '--formats', 'all',
+                                  '--electron', mode, '--package-jobs', '3')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('格式:   ' + ','.join(included), result.stdout)
+            self.assertIn('打包 deb（' + mode + '，', result.stdout)
+            self.assertIn('打包线程: 3', result.stdout)
+            for name in excluded:
+                self.assertNotIn('打包 ' + name + '（', result.stdout)
+        self.assertFalse(self.marker.exists())
+        self.assertFalse((self.root / 'dl').exists())
+
+    @unittest.skipUnless(shutil.which('dpkg-deb') and shutil.which('ar'), 'deb tools unavailable')
+    def test_deb_single_variant_and_explicit_threads(self):
+        store = self.native_fixture()
+        xz = self.bin / 'xz'
+        actual_xz = shutil.which('xz')
+        log = Path(self.temp.name) / 'xz-options'
+        xz.write_text('#!/bin/sh\nprintf "%s\\n" "$XZ_OPT" >> "$XZ_LOG"\nexec "' + actual_xz + '" "$@"\n')
+        xz.chmod(0o755)
+        self.env.update(XZ_LOG=str(log), XZ_OPT='-1 -T7')
+        for mode in ['bundled', 'system']:
+            result = self.run_cli('--only', 'package', '--formats', 'deb', '--store', str(store),
+                                  '--electron', mode, '--package-jobs', '1')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            archives = list((self.root / 'dist').glob('*.deb'))
+            self.assertEqual([p.name for p in archives], [f'deepseek-harness_1.3.7-rc.4_amd64.{mode}.deb'])
+            members = subprocess.check_output(['dpkg-deb', '-c', str(archives[0])], text=True)
+            self.assertEqual('/usr/lib/deepseek-harness/deepseek-harness' in members, mode == 'bundled')
+            shutil.rmtree(self.root / 'dist')
+        self.assertTrue(log.read_text().splitlines())
+        self.assertTrue(all(line == '-1 -T7 -T1' for line in log.read_text().splitlines()))
+
+    def test_appimage_explicit_threads_reach_mksquashfs(self):
+        store = self.package_fixture()
+        tool = store / 'tools/usr/bin/mksquashfs'
+        tool.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$SQUASH_ARGS"\nprintf squashfs > "$2"\n')
+        tool.chmod(0o755)
+        log = Path(self.temp.name) / 'squash-options'
+        self.env['SQUASH_ARGS'] = str(log)
+        result = self.run_cli('--only', 'package', '--store', str(store), '--package-jobs', '3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = log.read_text().splitlines()
+        self.assertEqual(args[args.index('-processors') + 1], '3')
 
     def test_non_appimage_prepare_skips_appimage_downloads(self):
         result = self.run_cli('--dry-run', '--only', 'prepare', '--formats', 'deb')
@@ -216,7 +272,13 @@ class BuildCLI(unittest.TestCase):
     @unittest.skipUnless(shutil.which('bsdtar') and shutil.which('zstd'), 'pacman tools unavailable')
     def test_real_pacman_metadata_and_archive(self):
         store = self.native_fixture()
-        result = self.run_cli('--only', 'package', '--formats', 'pacman', '--store', str(store))
+        actual_zstd = shutil.which('zstd')
+        log = Path(self.temp.name) / 'zstd-options'
+        wrapper = self.bin / 'zstd'
+        wrapper.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ZSTD_LOG"\nexec "' + actual_zstd + '" "$@"\n')
+        wrapper.chmod(0o755)
+        self.env['ZSTD_LOG'] = str(log)
+        result = self.run_cli('--only', 'package', '--formats', 'pacman', '--store', str(store), '--package-jobs', '1')
         self.assertEqual(result.returncode, 0, result.stderr)
         archive = self.root / 'dist/deepseek-harness-desktop-1.3.7_rc.4-1-x86_64.pkg.tar.zst'
         info = subprocess.check_output(['bsdtar', '-xOf', str(archive), '.PKGINFO'], text=True)
@@ -224,19 +286,23 @@ class BuildCLI(unittest.TestCase):
         self.assertIn('arch = x86_64', info)
         members = subprocess.check_output(['bsdtar', '-tf', str(archive)], text=True)
         self.assertIn('.MTREE.gz', members)
+        self.assertIn('-T1', log.read_text().splitlines())
         self.assertIn('.INSTALL', members)
         self.assertNotIn('.sharp-native-backup', members)
 
     @unittest.skipUnless(shutil.which('rpmbuild') and shutil.which('rpm'), 'rpm tools unavailable')
     def test_real_rpm_metadata_and_payload(self):
         store = self.native_fixture()
-        result = self.run_cli('--only', 'package', '--formats', 'rpm', '--store', str(store))
+        result = self.run_cli('--only', 'package', '--formats', 'rpm', '--store', str(store), '--package-jobs', '2')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         archive = self.root / 'dist/deepseek-harness-1.3.7-0.rc.4.1.x86_64.rpm'
         info = subprocess.check_output(['rpm', '--dbpath', str(store / 'work/x64/packages/rpmbuild/rpmdb'), '-qp', '--qf', '%{VERSION} %{RELEASE} %{ARCH}', str(archive)], text=True)
         self.assertEqual(info, '1.3.7 0.rc.4.1 x86_64')
         members = subprocess.check_output(['rpm', '--dbpath', str(store / 'work/x64/packages/rpmbuild/rpmdb'), '-qpl', str(archive)], text=True)
         self.assertIn('/usr/lib/deepseek-harness/deepseek-harness', members)
+        flags = subprocess.check_output(['rpm', '--dbpath', str(store / 'work/x64/packages/rpmbuild/rpmdb'),
+                                         '-qp', '--qf', '%{PAYLOADFLAGS}', str(archive)], text=True)
+        self.assertEqual(flags, '6T2')
         self.assertNotIn('.sharp-native-backup', members)
         top = store / 'work/x64/packages/rpmbuild'
         self.assertTrue(list(top.glob('BUILD/**/BUILDROOT/usr/bin/deepseek-harness')))

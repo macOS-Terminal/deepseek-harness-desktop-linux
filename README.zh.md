@@ -11,6 +11,7 @@
 
 新增的 `auto-build.sh` 可自动下载依赖、生成 Linux 应用树并打包，构建无需 root。
 默认生成 AppImage；`./auto-build.sh --formats all` 可生成 deb×2、pacman、RPM 和 AppImage。
+`--electron bundled|system|both` 可筛选包类型，`--package-jobs N` 可设置打包压缩线程数。
 先用 `./auto-build.sh --dry-run` 查看计划，再运行 `./auto-build.sh` 构建本机架构。
 完整的依赖、选项、分阶段用法、缓存清理和校验方法见 [自动构建指南](docs/AUTO_BUILD.md)。
 默认保留缓存、解包文件和构建暂存；需要成功后清理时使用 `--clean`。

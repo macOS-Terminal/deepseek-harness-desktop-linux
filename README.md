@@ -73,6 +73,7 @@ pip 或 venv 支持。首次安装这些系统工具可能需要管理员权限�
 详细选项、版本策略、缓存与验证方法见 [自动构建指南](docs/AUTO_BUILD.md)。
 默认保留缓存、解包文件与构建暂存；`--clean` 可在成功后清理中间物。
 默认生成 AppImage；`--formats deb,pacman,rpm` 可选择其他格式。对应打包工具需自行安装。
+`--electron bundled|system|both` 可筛选包类型，`--package-jobs N` 可设置打包压缩线程数。
 
 ### 手工构建全部格式
 
