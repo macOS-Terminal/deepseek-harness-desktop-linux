@@ -34,8 +34,8 @@
 ```
 ├── patches/
 │   ├── patch-main.py            平台准入 / resources 根 / 打包态 / 托盘 / 窗口控制 IPC
-│   ├── patch-mac-chrome.py      macOS 风格装饰：左置交通灯 + 侧栏毛玻璃
-│   ├── patch-fingerprint.py     放宽 V8 指纹白名单（x64 0x17cdd、arm64 0x1df14）
+│   ├── patch-mac-chrome.py      macOS 风格装饰：左置交通灯 + 圆角 + 可选系统模糊
+│   ├── patch-fingerprint.py     按 ELF 符号定位并放宽 V8 指纹白名单（x64 / arm64）
 │   ├── patch-titlebar.py        早期隐藏标题栏方案（已被 patch-mac-chrome 取代）
 │   └── upgrade-mac-chrome.py    对已打过旧版 chrome 的树做增量修复（幂等）
 ├── image-worker-src/
@@ -43,7 +43,10 @@
 │   ├── worker.cjs               真正执行 libvips 的独立 Node 进程
 │   └── verify-image-worker.cjs  隔离效果自检
 ├── icons/                       桌面项 + 16→512 全套 hicolor 图标
-├── build-packages.sh            打全部格式（deb×2 / pkg.tar.zst / rpm / AppImage）
+├── auto-build.sh                自动下载、生成应用树并打 AppImage
+├── scripts/                     asar 解包、原生依赖替换与分阶段构建模块
+├── tests/                       离线构建回归测试
+├── build-packages.sh            兼容入口，调用共用打包模块生成全部格式
 ├── install-image-worker.sh      把 Sharp 替身包装入某棵应用树
 ├── verify-launch-x64.sh         五种格式逐个解包并实测启动
 └── docs/
@@ -55,6 +58,24 @@
 ---
 
 ## 快速开始
+
+### 自动构建安装包
+
+```bash
+./auto-build.sh --dry-run       # 查看计划，不下载、不写入
+./auto-build.sh                 # 按本机架构下载、生成应用树并打包
+./auto-build.sh --formats all   # 构建全部五种格式
+./auto-build.sh --arch all      # 构建 x86_64 与 aarch64
+```
+
+需要 Bash、Python 3.12+、7z、curl、tar、xz、unzip 和 coreutils；Python 还需
+pip 或 venv 支持。首次安装这些系统工具可能需要管理员权限，构建本身无需 root。
+详细选项、版本策略、缓存与验证方法见 [自动构建指南](docs/AUTO_BUILD.md)。
+默认保留缓存、解包文件与构建暂存；`--clean` 可在成功后清理中间物。
+默认生成 AppImage；`--formats deb,pacman,rpm` 可选择其他格式。对应打包工具需自行安装。
+`--electron bundled|system|both` 可筛选包类型，`--package-jobs N` 可设置打包压缩线程数。
+
+### 手工构建全部格式
 
 ```bash
 # 1) 按 README.zh.md 准备依赖（官方 dmg、Electron、Node/Python、原生模块、打包工具）

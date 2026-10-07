@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""macOS 风格窗口装饰（Linux）——把三大金刚键移到左上角 + 侧栏毛玻璃。
+"""macOS 风格窗口装饰（Linux）——左置交通灯 + 自动系统模糊 / CSS 毛玻璃。
 
 设计要点（均基于对 0.2.0-rc.2 载荷的实际代码阅读，不是猜测）：
 
@@ -11,23 +11,118 @@
 
 2. **绝不动 `data-platform`**：应用用 `html[data-platform=darwin]` 切材质，但同一属性
    也决定快捷键把 `primary` 解析成 Meta(⌘) 还是 Control —— 在 Linux 上伪造 darwin
-   会让快捷键显示成 ⌘ 且修饰键映射错误。所以只**复刻 darwin 的材质数值**。
+   会让快捷键显示成 ⌘ 且修饰键映射错误。
 
-3. **毛玻璃配方直接取自应用自身的 darwin 规则**：
-   `color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent)` 叠一条竖向渐变，
-   再补 `backdrop-filter: blur(40px) saturate(150%)`（应用菜单材质用的同一档位）。
+3. **可选自动毛玻璃**（默认实色）：向公布模糊能力的 X11 合成器请求桌面模糊，失败时用不透明
+   背景上的 CSS 柔和渐变模拟磨砂材质。按协议与窗口能力判断，不按会话名称判断。
 
-4. **窗口层**：Linux 用 `titleBarStyle:"hidden"` + `transparent:true`，并去掉上一版的
-   `titleBarOverlay`（那正是按钮跑到右上角的原因）；欢迎窗额外 `frame:false`。
+4. **窗口层**：Linux 用 `titleBarStyle:"hidden"` + 透明能力，页面以实色内容回退，并独立裁剪圆角；
+   并去掉上一版的 `titleBarOverlay`（那正是按钮跑到右上角的原因）；欢迎窗额外 `frame:false`。
 
 5. **交通灯**：按应用自身 darwin 常量 `trafficLightPosition {x:16,y:18}` 摆放，
    点击经 IPC 走 minimize / maximize / close。
 
 用法: patch-mac-chrome.py <resources/app 目录>
 """
+import re
 import sys
+import os
+from pathlib import Path
 
 TITLEBAR_HEIGHT = 48
+
+# 侧栏默认实色，DSH_TRANSLUCENT_SIDEBAR=1 才请求桌面模糊。
+# 两种材质均使用透明窗口加裁剪，让未支持模糊时也保留圆角；内容仍完整绘制。
+SIDEBAR_TRANSLUCENT = os.environ.get("DSH_TRANSLUCENT_SIDEBAR", "0").lower() in ("1", "true", "yes", "on")
+
+# 注入块版本标记：preload 里带这个标记才算当前版本，用于把旧树上的旧 CSS 换掉。
+# 任何形态的 Linux 窗口分支：旧版（带 titleBarOverlay）、上一版（内联 transparent: true）、
+# 目标形态都算。用它来“先找到、再整体替换”，避免不识别的旧形态被当成“还没有分支”而重复插入。
+LINUX_WELCOME_RE = re.compile(r'\t\t\.\.\.platform === "linux" \? \{.*?\n\t\t\} : \{\},\n', re.S)
+LINUX_MAIN_RE = re.compile(r'\t\t\.\.\.process\.platform === "linux" && primary \? \{.*?\n\t\t\} : \{\},\n', re.S)
+
+# 上一次插入留下的行粘连：`} : {},` 与下一行并到了同一行（块尾缺换行导致）。
+# 不修掉的话，下一轮匹配不到自己的块，会以为“还没有分支”而重复插入。
+MERGED_BLOCK_RE = re.compile(r'(\n\t\t\} : \{\},)\t+(\.\.\.)')
+
+CHROME_BEGIN = '/* dsh-linux-chrome:begin v3 */'
+CHROME_END = '/* dsh-linux-chrome:end */'
+CHROME_BEGIN_RE = re.compile(r'/\* dsh-linux-chrome:begin v\d+ \*/')
+
+# 使用 Node 内置模块，不修改 node_modules，不增加 npm / 原生编译依赖。
+# 能力判定同 KWindowEffects 的 X11 实现：root 上存在 blur 支持属性。
+BLUR_BEGIN = '/* dsh-linux-blur:begin v1 */'
+BLUR_END = '/* dsh-linux-blur:end */'
+MAIN_BLUR_FN = r'''
+async function requestLinuxBlur(window) {
+	const fallback = () => {
+		if (!window.isDestroyed()) window.setBackgroundColor("#00000000");
+		return "css";
+	};
+	if (process.platform !== "linux" || window.isDestroyed()) return "css";
+	// Probe protocol + window capabilities, including XWayland. The session
+	// name is not evidence that a particular window supports this protocol.
+	if (!process.env.DISPLAY) return fallback();
+	try {
+		const { execFile } = await import("node:child_process");
+		const xprop = (args) => new Promise((resolve, reject) => {
+			execFile("xprop", args, { timeout: 800, maxBuffer: 16384, env: { ...process.env, LC_ALL: "C" } },
+				(error, stdout) => error ? reject(error) : resolve(stdout));
+		});
+		const atom = "_KDE_NET_WM_BLUR_BEHIND_REGION";
+		const support = await xprop(["-root", atom]);
+		if (!new RegExp(`^${atom}\\([^\\n]+\\)\\s*=`).test(support)) return fallback();
+		if (window.isDestroyed()) return "css";
+		const handle = window.getNativeWindowHandle();
+		if (handle.length < 4) return fallback();
+		// An XID is 32-bit even when Electron returns an unsigned-long buffer.
+		if (handle.length >= 8 && handle.readUInt32LE(4) !== 0) return fallback();
+		const xid = handle.readUInt32LE(0);
+		if (xid === 0) return fallback();
+		const id = `0x${xid.toString(16)}`;
+		// Validate ownership before writing: never treat a Wayland pointer or
+		// an unrelated X11 window as our XID.
+		const pid = await xprop(["-id", id, "_NET_WM_PID"]);
+		if (Number(pid.match(/_NET_WM_PID\(CARDINAL\)\s*=\s*(\d+)/)?.[1]) !== process.pid) return fallback();
+		await xprop(["-id", id, "-f", atom, "32c", "-set", atom, "0"]);
+		const applied = await xprop(["-id", id, atom]);
+		if (applied.trim() !== `${atom}(CARDINAL) = 0`) return fallback();
+		if (window.isDestroyed()) return "css";
+		window.setBackgroundColor("#00000000");
+		return "system";
+	} catch {
+		// Missing xprop, no protocol, timeout or vanished window: opaque CSS.
+		return fallback();
+	}
+}
+'''
+
+VIBRANCY_CSS = r'''
+/* Default to a fully painted surface. Only an accepted system blur request
+   makes it translucent. Filters stay off the sidebar and its fixed controls. */
+#dsh-mac-vibrancy {
+	position: fixed; inset: 0 auto 0 0; width: var(--dsh-linux-sidebar-width, 280px);
+	z-index: 0; pointer-events: none; overflow: hidden;
+	background: var(--dsw-specific-sidebar-fill);
+	box-shadow: inset -1px 0 0 color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent);
+}
+#dsh-mac-vibrancy::before {
+	content: ""; position: absolute; inset: -40px;
+	background: radial-gradient(ellipse at 15% 15%, #7a9bf033, transparent 60%),
+		radial-gradient(ellipse at 80% 85%, #8f89b82b, transparent 60%);
+	filter: blur(28px) saturate(130%);
+}
+html[data-dsh-linux-blur="system"] #dsh-mac-vibrancy {
+	background: linear-gradient(to bottom, #7a9bf01a, #7a9bf000 35%, #8f89b800 68%, #8f89b817),
+		color-mix(in srgb, color-mix(in srgb, var(--dsw-specific-sidebar-fill) 97%, #7a9bf0) 40%, transparent);
+}
+html[data-dsh-linux-blur="system"] #dsh-mac-vibrancy::before { display: none; }
+html[data-dsh-linux-blur="system"][data-ds-dark-theme] #dsh-mac-vibrancy,
+html[data-dsh-linux-blur="system"] body[data-ds-dark-theme] #dsh-mac-vibrancy {
+	background: linear-gradient(to bottom, #7a9bf014, #7a9bf000 35%, #8f89b800 68%, #8f89b812),
+		color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent);
+}
+'''
 
 PRELOAD_FN = r'''
 /* ------------------------------------------------------------------------ *
@@ -46,12 +141,50 @@ function installLinuxChrome() {
 	const HEIGHT = __TITLEBAR_HEIGHT__;
 	const LIGHTS_ID = "dsh-mac-lights";
 	const VIBRANCY_ID = "dsh-mac-vibrancy";
-	const STYLE_ID = "dsh-mac-chrome-style";
+	let chromeStylePending = false;
+	let chromeStyleApplied = false;
+	let blurMode = "css";
+	let blurPending = false;
+	const syncBlur = async () => {
+		if (!__TRANSLUCENT__ || blurPending) return;
+		blurPending = true;
+		try {
+			blurMode = await electron.ipcRenderer.invoke(CHANNEL, "blur") === "system" ? "system" : "css";
+		} catch { blurMode = "css"; }
+		finally { blurPending = false; }
+		apply();
+	};
+
+	let shapePending = false;
+	const syncWindowShape = async () => {
+		if (shapePending) return;
+		shapePending = true;
+		try {
+			const state = await electron.ipcRenderer.invoke(CHANNEL, "state");
+			if (document.documentElement !== null) document.documentElement.dataset.dshWindowMaximized = state?.maximized ? "true" : "false";
+		} catch { /* Keep the last known window shape if the window is closing. */ }
+		finally { shapePending = false; }
+	};
 	const CSS = `
+html[data-dsh-mac-chrome] body {
+	--dsh-linux-band-bg: var(--dsw-specific-sidebar-fill);
+}
+html[data-dsh-linux-blur="system"] body {
+	--dsh-linux-band-bg: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent);
+}
+/* Plugins may paint their own picker instead of using MenuSurface (for example
+   skills-management's .sk-picker). Its menu token is translucent upstream and
+   supplies no blur itself. Rebind the shared tokens in every opaque mode so
+   both host menus and plugin-owned portals paint a complete theme surface. */
+html[data-dsh-mac-chrome]:not([data-dsh-linux-blur="system"]) body {
+	--dsw-menu-surface-fill: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base)) !important;
+	--dsw-specific-menu: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base)) !important;
+	--dsw-menu-backdrop-filter: none !important;
+}
 html[data-dsh-mac-chrome] [class*="_frame"] { background: 0 0 !important; }
 html[data-dsh-mac-chrome] [class*="_frame"]::before {
 	background: linear-gradient(to right,
-		color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent) 0 var(--dsh-linux-sidebar-width, 280px),
+		__BAND_BG__ 0 var(--dsh-linux-sidebar-width, 280px),
 		var(--dsw-alias-bg-base) var(--dsh-linux-sidebar-width, 280px) 100%) !important;
 }
 /* The sidebar's inner root paints an opaque fill of its own; the bundle's own
@@ -60,31 +193,35 @@ html[data-dsh-mac-chrome] [class*="_frame"]::before {
 html[data-dsh-mac-chrome] [class*="_sidebarCol"] [class*="_root"] { background: 0 0 !important; }
 /* The document background must be transparent too, otherwise it hides the
    desktop behind the translucent sidebar. */
-html[data-dsh-mac-chrome], html[data-dsh-mac-chrome] body { background: transparent !important; }
-/* macOS vibrancy approximation.
-   The blur lives on a dedicated background layer instead of the sidebar itself:
-   backdrop-filter turns its element into the containing block for fixed-position
-   descendants and clips them by its own overflow, which broke the app's
-   fixed-position collapse toggle and cut a notch out of the frame. Keeping the
-   filter on a pointer-transparent sibling avoids both. */
-#dsh-mac-vibrancy {
-	position: fixed; inset: 0 auto 0 0; width: var(--dsh-linux-sidebar-width, 280px);
-	z-index: 0; pointer-events: none;
-	background: linear-gradient(to bottom, #7a9bf01a, #7a9bf000 35%, #8f89b800 68%, #8f89b817),
-		color-mix(in srgb, color-mix(in srgb, var(--dsw-specific-sidebar-fill) 97%, #7a9bf0) 40%, transparent);
-	backdrop-filter: blur(40px) saturate(150%);
-	-webkit-backdrop-filter: blur(40px) saturate(150%);
+/* A transparent image prevents the HTML canvas from borrowing body's opaque
+   fill, which would paint square corners outside the body's clip. */
+html[data-dsh-mac-chrome] { background: linear-gradient(transparent, transparent) !important; }
+html[data-dsh-mac-chrome] body {
+	background: var(--dsw-alias-bg-base) !important;
+	clip-path: inset(0 round 12px);
 }
-html[data-dsh-mac-chrome][data-ds-dark-theme] #dsh-mac-vibrancy,
-html[data-dsh-mac-chrome] body[data-ds-dark-theme] #dsh-mac-vibrancy {
-	background: linear-gradient(to bottom, #7a9bf014, #7a9bf000 35%, #8f89b800 68%, #8f89b812),
-		color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent);
-}
+html[data-dsh-mac-chrome][data-dsh-linux-blur="system"] body { background: transparent !important; }
+html[data-dsh-mac-chrome][data-dsh-window-maximized="true"] body,
+html[data-dsh-mac-chrome][data-fullscreen] body { clip-path: none; }
+__VIBRANCY_CSS__
 /* The sidebar itself only goes transparent so the layer above shows through. */
 html[data-dsh-mac-chrome] [class*="_sidebarCol"] {
-	background: 0 0 !important;
+	background: __SIDEBAR_BG__ !important;
 	border-right: none !important;
 }
+/* The bundle's session-list fade ends in the *plain* sidebar fill
+   (._7514NG_fade { background: linear-gradient(to bottom, transparent,
+   var(--dsw-specific-sidebar-fill)) }) and the bundle itself hides it wherever
+   the sidebar is vibrancy: [data-platform=darwin] ._7514NG_fade { display: none }.
+   Under our chrome the sidebar surface is never that plain colour: #dsh-mac-vibrancy
+   paints the fill *plus* a soft gradient wash (system mode: a vertical tint,
+   css/opaque fallback: the ::before colour wash), so the strip always darkens
+   towards the fill and then snaps back at the footer edge — a hard 24px band above
+   "更多" in either mode. Mirror the bundle's own darwin decision unconditionally. */
+/* Scope this to the sidebar: process-scroll bodies also acquire _fadeTop /
+   _fadeBottom classes. Hiding those bodies makes ResizeObserver clear their
+   scroll edges, then show them again, causing an endless layout feedback loop. */
+html[data-dsh-mac-chrome] [class*="_sidebarCol"] [class*="_fade"] { display: none !important; }
 /* Traffic lights where macOS puts them: 16px in, 18px down, 12px dots. */
 #dsh-mac-lights {
 	position: fixed; left: 16px; top: 18px; z-index: 2147483646;
@@ -132,24 +269,6 @@ html[data-dsh-mac-chrome][data-fullscreen] [class*="_toggle"] { left: 12px !impo
    must stay to their right in every state rather than sliding underneath. */
 html[data-dsh-mac-chrome] [class*="_leadingSeat"] { left: 88px !important; }
 __EXTRA_CSS__`;
-	/**
-	 * Tiling compositors (niri, Hyprland, sway) fill the screen without telling
-	 * Electron: neither isFullScreen() nor isMaximized() flips, so the shell never
-	 * emits the fullscreen channel the bundle's layout keys off. Treat a viewport
-	 * that covers the display work area as fullscreen.
-	 */
-	const syncTilingFullscreen = () => {
-		const root = document.documentElement;
-		if (root === null) return;
-		const coversWidth = window.innerWidth >= window.screen.availWidth - 2;
-		const coversHeight = window.innerHeight >= window.screen.availHeight - 2;
-		root.dataset.dshTilingFullscreen = coversWidth && coversHeight ? "true" : "false";
-		const effective = (root.dataset.dshWindowFullscreen === "true") || (root.dataset.dshTilingFullscreen === "true");
-		if (effective) root.dataset.fullscreen = "true";
-		else delete root.dataset.fullscreen;
-	};
-	syncTilingFullscreen();
-	window.addEventListener("resize", syncTilingFullscreen);
 	let lights = null;
 	const send = (action) => { electron.ipcRenderer.invoke(CHANNEL, action); };
 	const buildLights = () => {
@@ -177,11 +296,21 @@ __EXTRA_CSS__`;
 		}
 		return host;
 	};
+	// The first-run welcome page rejects inline styles (style-src 'self').
+	// Electron applies our fixed chrome stylesheet without weakening its CSP.
+	const syncChromeStyle = async () => {
+		if (chromeStyleApplied || chromeStylePending) return;
+		chromeStylePending = true;
+		try { chromeStyleApplied = await electron.ipcRenderer.invoke(CHANNEL, "chrome-style", CSS) === true; }
+		catch { /* Retry on the next layout pass if the IPC is not ready yet. */ }
+		finally { chromeStylePending = false; }
+	};
 	const apply = () => {
 		const root = document.documentElement;
 		if (root === null) return;
 		root.dataset.windowsTitlebar = "";
 		root.dataset.dshMacChrome = "";
+		root.dataset.dshLinuxBlur = __TRANSLUCENT__ ? blurMode : "solid";
 		root.style.setProperty("--dsh-windows-titlebar-height", `${HEIGHT}px`);
 		const sidebar = document.querySelector('[class*="_sidebarCol"]');
 		if (sidebar !== null) {
@@ -199,13 +328,8 @@ __EXTRA_CSS__`;
 				}
 			}
 		}
-		if (document.getElementById(STYLE_ID) === null) {
-			const style = document.createElement("style");
-			style.id = STYLE_ID;
-			style.textContent = CSS;
-			(document.head ?? root).appendChild(style);
-		}
-		if (document.getElementById(VIBRANCY_ID) === null && document.body !== null) {
+		syncChromeStyle();
+		if (__TRANSLUCENT__ && document.getElementById(VIBRANCY_ID) === null && document.body !== null) {
 			const vibrancy = document.createElement("div");
 			vibrancy.id = VIBRANCY_ID;
 			vibrancy.setAttribute("aria-hidden", "true");
@@ -220,7 +344,16 @@ __EXTRA_CSS__`;
 			document.body.appendChild(lights);
 		}
 	};
+	let observedSidebar = null;
+	const sidebarObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => apply()) : null;
 	apply();
+	syncBlur();
+	syncWindowShape();
+	window.addEventListener("resize", syncWindowShape);
+	window.addEventListener("focus", syncWindowShape);
+	// Recheck when the compositor/effect changes; no overlapping requests.
+	if (__TRANSLUCENT__) setInterval(syncBlur, 10000);
+	window.addEventListener("focus", syncBlur);
 	if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", apply);
 	window.addEventListener("resize", apply);
 	window.addEventListener("focus", () => { if (lights !== null) lights.removeAttribute("data-inactive"); });
@@ -229,8 +362,6 @@ __EXTRA_CSS__`;
 	// tens of seconds, so keep re-measuring instead of sampling a few early ticks.
 	const poll = setInterval(apply, 500);
 	setTimeout(() => clearInterval(poll), 120000);
-	let observedSidebar = null;
-	const sidebarObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => apply()) : null;
 	let scheduled = false;
 	const observer = new MutationObserver(() => {
 		if (scheduled) return;
@@ -251,7 +382,21 @@ __EXTRA_CSS__`;
 
 # 欢迎窗是独立页面（#root 自身铺 tint，.titlebar 已带 app-region:drag），
 # 只需给交通灯让出左侧空间，不套用主窗的 frame/sidebar 规则。
-WELCOME_EXTRA_CSS = '\nhtml[data-dsh-mac-chrome] .titlebar { padding-left: 68px; }\n'
+WELCOME_EXTRA_CSS = '''
+/* The welcome bundle does not define the main app's sidebar palette. */
+html[data-dsh-mac-chrome], html[data-dsh-mac-chrome] body {
+	--dsw-specific-sidebar-fill: #f9fafb; --dsw-alias-bg-base: #f9fafb;
+}
+@media (prefers-color-scheme: dark) {
+	html[data-dsh-mac-chrome], html[data-dsh-mac-chrome] body {
+		--dsw-specific-sidebar-fill: #1b1b1c; --dsw-alias-bg-base: #1b1b1c;
+	}
+}
+html[data-dsh-mac-chrome] .titlebar { padding-left: 68px; }
+html[data-dsh-mac-chrome][data-dsh-linux-blur="solid"] #root { background: var(--dsw-alias-bg-base) !important; }
+html[data-dsh-mac-chrome]:not([data-dsh-linux-blur="solid"]) #root { background: transparent !important; }
+html[data-dsh-mac-chrome] #dsh-mac-vibrancy { width: 100%; }
+'''
 
 PRELOAD_FULLSCREEN_OLD = '''function syncWindowFullscreen() {
 	if (process.platform !== "darwin" && process.platform !== "win32") return;'''
@@ -265,19 +410,64 @@ WELCOME_MARK_CALL = 'electron.contextBridge.exposeInMainWorld("dshWelcome", api)
 
 
 def inject_preload(path: str, call_anchor: str, extra_css: str) -> str:
-    src = open(path, encoding='utf8').read()
+    """把 installLinuxChrome 注进 preload，并保证**内容与当前材质模式一致**。
+
+    判定按内容而不只按版本标记：标记里含材质配方，所以「同版本树切换材质」时
+    标记虽然相同、内容已经不同，必须整块替换；只比版本号会留下旧 CSS，
+    出现「窗口配置是新的、样式是旧的」这种半新半旧。
+
+    四种情况：
+      * 标记块与目标内容一致 → 跳过；
+      * 标记块存在但内容不同（切了材质/改了配方）→ 整块替换；
+      * 有 installLinuxChrome 但无标记（上一版注入）→ 按锚点整块替换；
+      * 全新 → 注入。
+    """
+    src = Path(path).read_text(encoding='utf8')
+    src = src.replace(PRELOAD_FULLSCREEN_OLD, PRELOAD_FULLSCREEN_NEW, 1)
+    block = (PRELOAD_FN
+             .replace('__TITLEBAR_HEIGHT__', str(TITLEBAR_HEIGHT))
+             .replace('__EXTRA_CSS__', extra_css)
+             .replace('__TRANSLUCENT__', 'true' if SIDEBAR_TRANSLUCENT else 'false')
+             .replace('__BAND_BG__', 'var(--dsh-linux-band-bg)'
+                      if SIDEBAR_TRANSLUCENT else 'var(--dsw-specific-sidebar-fill)')
+              .replace('__SIDEBAR_BG__', '0 0' if SIDEBAR_TRANSLUCENT else 'var(--dsw-specific-sidebar-fill)')
+             .replace('__VIBRANCY_CSS__', VIBRANCY_CSS if SIDEBAR_TRANSLUCENT else ''))
+    target = f'{CHROME_BEGIN}\n{block}\ninstallLinuxChrome();\n{CHROME_END}'
+
+    marker = CHROME_BEGIN_RE.search(src)
+    if marker is not None:
+        begin = marker.start()
+        finish = src.find(CHROME_END, begin)
+        if finish == -1:
+            return f'  ✗ 注入块标记不完整（缺 {CHROME_END}）: {path}'
+        finish += len(CHROME_END)
+        if src[begin:finish] == target:
+            return f'  · 已注入过且内容一致（{"自动毛玻璃" if SIDEBAR_TRANSLUCENT else "不透明"}），跳过: {path}'
+        src = src[:begin] + target + src[finish:]
+        Path(path).write_text(src, encoding='utf8')
+        return f'  ✓ 注入块内容已更新为{"自动毛玻璃" if SIDEBAR_TRANSLUCENT else "不透明"}配方: {path}'
+
     if 'installLinuxChrome' in src:
-        return f'  · 已注入过，跳过: {path}'
+        if call_anchor not in src:
+            return f'  ✗ 旧版注入块存在但找不到锚点，无法迁移: {path}'
+        head = src.index(call_anchor) + len(call_anchor)
+        tail = src.index('installLinuxChrome();', head) + len('installLinuxChrome();')
+        src = src[:head] + '\n' + target + src[tail:]
+        Path(path).write_text(src, encoding='utf8')
+        return f'  ✓ 旧版注入块已迁移到 {CHROME_BEGIN}: {path}'
+
     if call_anchor not in src:
         return f'  ✗ 找不到锚点: {path}'
     src = src.replace(PRELOAD_FULLSCREEN_OLD, PRELOAD_FULLSCREEN_NEW, 1)
-    block = PRELOAD_FN.replace('__TITLEBAR_HEIGHT__', str(TITLEBAR_HEIGHT)).replace('__EXTRA_CSS__', extra_css)
-    src = src.replace(call_anchor, call_anchor + '\n' + block + '\ninstallLinuxChrome();\n', 1)
-    open(path, 'w', encoding='utf8').write(src)
+    src = src.replace(call_anchor, call_anchor + '\n' + target + '\n', 1)
+    Path(path).write_text(src, encoding='utf8')
     return f'  ✓ 注入 installLinuxChrome(): {path}'
 
 
 def replace_once(src: str, old: str, new: str, label: str, notes: list) -> str:
+    if new in src:
+        notes.append(f'  · 已应用: {label}')
+        return src
     if old not in src:
         notes.append(f'  ✗ 未匹配: {label}')
         return src
@@ -285,56 +475,165 @@ def replace_once(src: str, old: str, new: str, label: str, notes: list) -> str:
     return src.replace(old, new, 1)
 
 
-def main(app_dir: str) -> int:
-    notes: list[str] = []
-    main_js = f'{app_dir}/lib/main.js'
-    src = open(main_js, encoding='utf8').read()
+def ensure_linux_block(src: str, pattern, new: str, anchor: str, label: str, notes: list) -> str:
+    """把某个窗口的 Linux 分支做成**恰好一份**目标形态。三种来源都要走通：
 
-    # --- 1a) 欢迎窗底色：透明 ---
-    src = replace_once(
-        src,
-        '\t\tbackgroundColor: platform === "darwin" || platform === "win32" ? "#00000000" : "#FFFFFF",',
-        '\t\tbackgroundColor: "#00000000",',
-        '欢迎窗：底色改透明',
-        notes,
-    )
+    * 官方 dmg 解出来的树：没有该分支 → 在 `anchor`（同窗 win32 分支）前新增；
+    * 已打过上一版补丁的树：分支形态可能是旧的 `titleBarOverlay`，也可能是内联的
+      `transparent: true` → **用正则找到已有分支并整体替换**；
+    * 已经被插成多份的树（历史 bug）→ 先全部删掉再写一份。
 
-    # --- 1b) 欢迎窗 linux 分支：无边框 + 透明（移除右侧 overlay 按钮）---
-    src = replace_once(
-        src,
-        '''\t\t...platform === "linux" ? {
-\t\t\ttitleBarStyle: "hidden",
-\t\t\ttitleBarOverlay: {
-\t\t\t\theight: 42,
-\t\t\t\tsymbolColor: nativeTheme.shouldUseDarkColors ? "#f9fafb" : "#0f1115"
-\t\t\t}
-\t\t} : {},''',
-        '''\t\t...platform === "linux" ? {
+    只认某一种旧形态是不够的：识别不到就会以为“还没有分支”而再插一份，
+    同一窗口出现两份配置 —— 后一份生效、前一份被断言读到，两边说法不一致。
+    """
+    repaired = MERGED_BLOCK_RE.sub(r'\1\n\t\t\2', src)
+    if repaired != src:
+        notes.append(f'  ! {label}：修复了上一次插入留下的行粘连')
+        src = repaired
+    if not new.endswith('\n'):
+        new += '\n'
+    found = list(pattern.finditer(src))
+    collapsed = 0
+    if len(found) > 1:
+        collapsed = len(found)
+        notes.append(f'  ! {label}：发现 {collapsed} 份 Linux 分支，收敛为 1 份')
+        src = pattern.sub('', src)
+        found = []
+    if len(found) == 1:
+        if found[0].group(0) == new:
+            notes.append(f'  · {label}：已是目标形态，跳过')
+            return src
+        notes.append(f'  ✓ {label}（替换已有 Linux 分支）')
+        return src[:found[0].start()] + new + src[found[0].end():]
+    if anchor in src:
+        notes.append(f'  ✓ {label}（{"收敛后重新写入" if collapsed else "原生树：新增"}）')
+        return src.replace(anchor, new + anchor, 1)
+    notes.append(f'  ✗ 未匹配: {label}（既没有已有分支，也找不到插入锚点）')
+    return src
+
+
+def verify_end_state(app_dir: str) -> int:
+    """窗口层最终态断言：patch 步骤报 ✗ 不等于构建可以继续。
+
+    缺任何一项就返回非零，让调用方（auto-build.sh 的 set -e）当场停下。
+    断言内容随材质模式变化：不透明模式要求「实色侧栏 + 独立透明圆角」，
+    自动模式要求「系统模糊请求 + CSS 回退 + 窗口透明能力」。
+    """
+    import re
+    main = Path(f'{app_dir}/lib/main.js').read_text(encoding='utf8')
+    pre_app = Path(f'{app_dir}/lib/preload-app.cjs').read_text(encoding='utf8')
+    pre_welcome = Path(f'{app_dir}/lib/preload-welcome.cjs').read_text(encoding='utf8')
+    injected = pre_app + pre_welcome
+
+    main_win = re.search(r'\.\.\.process\.platform === "linux" && primary \? \{(.*?)\} : \{\},', main, re.S)
+    welcome_win = re.search(r'\.\.\.platform === "linux" \? \{(.*?)\} : \{\},', main, re.S)
+    main_body = main_win.group(1) if main_win else ''
+    welcome_body = welcome_win.group(1) if welcome_win else ''
+
+    if SIDEBAR_TRANSLUCENT:
+        material_ok = (
+            'transparent: true' in main_body and 'transparent: true' in welcome_body
+            and 'requestLinuxBlur' in main and BLUR_BEGIN in main
+            and all('syncBlur();' in preload and 'data-dsh-linux-blur="system"' in preload
+                    and 'filter: blur(28px)' in preload for preload in (pre_app, pre_welcome))
+        )
+        material_name = '侧栏材质：自动系统模糊 / 不透明 CSS 毛玻璃回退'
+    else:
+        material_ok = (
+            'backgroundColor:' in main_body and 'transparent: true' in main_body
+            and 'backgroundColor:' in welcome_body and 'transparent: true' in welcome_body
+            and 'backdrop-filter' not in injected.replace('--dsw-menu-backdrop-filter: none !important;', '')
+            and 'var(--dsw-specific-sidebar-fill) !important' in injected
+        )
+        material_name = '侧栏材质：不透明实色（跟随明暗主题，无 backdrop-filter）'
+
+    checks = [
+        ('主窗口 Linux 分支存在且无原生边框', bool(main_win) and 'frame: false' in main_body),
+        ('欢迎窗 Linux 分支存在', bool(welcome_win)),
+        # 重复配置会让“后一份生效、断言读到前一份”，必须挡住。
+        ('主窗口 Linux 分支只有一份', main.count('...process.platform === "linux" && primary ? {') == 1),
+        ('没有行粘连（块尾换行完整）', MERGED_BLOCK_RE.search(main) is None),
+        ('欢迎窗 Linux 分支只有一份', main.count('...platform === "linux" ? {') == 1),
+        (material_name, material_ok),
+        ('窗口控制 IPC 已注册', main.count('dsh-desktop:linux-window-control') == 1),
+        ('最大化不隐藏交通灯', 'const fullscreen = window.isFullScreen();' in main),
+        ('preload-app 注入了当前版本', CHROME_BEGIN in pre_app),
+        ('preload-welcome 注入了当前版本', CHROME_BEGIN in pre_welcome),
+        ('preload-app 有 installLinuxChrome', 'installLinuxChrome' in pre_app),
+        ('仅侧栏列表淡出层隐藏（不影响工作步骤滚动）',
+         '[class*="_sidebarCol"] [class*="_fade"] { display: none !important; }' in injected
+         and 'html[data-dsh-mac-chrome] [class*="_fade"] { display: none' not in injected),
+        ('preload-welcome 有 installLinuxChrome', 'installLinuxChrome' in pre_welcome),
+        ('preload-welcome 只声明一次 VIBRANCY_ID',
+         len(re.findall(r'(?:const|let|var)\s+VIBRANCY_ID', pre_welcome)) == 1),
+    ]
+    checks.append(('模糊与实色模式都有圆角裁剪', all('clip-path: inset(0 round 12px)' in preload for preload in (pre_app, pre_welcome))))
+    checks.append(('首次启动样式通过 Electron 注入，不依赖内联样式', 'await window.webContents.insertCSS(css)' in main and all('syncChromeStyle();' in preload for preload in (pre_app, pre_welcome))))
+    checks.append(('系统模糊 IPC 动作只有一份', main.count('if (action === "blur")') == 1))
+    print('== 窗口层最终态断言（材质模式：%s）' % ('自动毛玻璃' if SIDEBAR_TRANSLUCENT else '不透明'))
+    for name, ok in checks:
+        print(f'  {"✓" if ok else "✗"} {name}')
+    missing = [name for name, ok in checks if not ok]
+    if missing:
+        print('✗ 断言未通过（构建应当中止）: ' + '、'.join(missing))
+        return 1
+    print('✓ 断言通过')
+    return 0
+
+
+WELCOME_LINUX_OPAQUE = '''\t\t...platform === "linux" ? {
 \t\t\ttitleBarStyle: "hidden",
 \t\t\tframe: false,
-\t\t\ttransparent: true
-\t\t} : {},''',
-        '欢迎窗：Linux 透明无边框（移除右上角 overlay 按钮）',
+\t\t\ttransparent: true,
+\t\t\tbackgroundColor: "#00000000"
+\t\t} : {},'''
+WELCOME_LINUX_TRANSLUCENT = '''\t\t...platform === "linux" ? {
+\t\t\ttitleBarStyle: "hidden",
+\t\t\tframe: false,
+\t\t\ttransparent: true,
+\t\t\tbackgroundColor: "#00000000"
+\t\t} : {},'''
+MAIN_LINUX_OPAQUE = '''\t\t...process.platform === "linux" && primary ? {
+\t\t\ttitleBarStyle: "hidden",
+\t\t\tframe: false,
+\t\t\ttransparent: true,
+\t\t\tbackgroundColor: "#00000000",
+\t\t\thasShadow: true
+\t\t} : {},'''
+MAIN_LINUX_TRANSLUCENT = '''\t\t...process.platform === "linux" && primary ? {
+\t\t\ttitleBarStyle: "hidden",
+\t\t\tframe: false,
+\t\t\ttransparent: true,
+\t\t\tbackgroundColor: "#00000000",
+\t\t\thasShadow: true
+\t\t} : {},'''
+
+
+def apply_patch(app_dir: str) -> int:
+    notes: list[str] = []
+    welcome_new = WELCOME_LINUX_TRANSLUCENT if SIDEBAR_TRANSLUCENT else WELCOME_LINUX_OPAQUE
+    main_new = MAIN_LINUX_TRANSLUCENT if SIDEBAR_TRANSLUCENT else MAIN_LINUX_OPAQUE
+    main_js = f'{app_dir}/lib/main.js'
+    src = Path(main_js).read_text(encoding='utf8')
+
+    # --- 1) 欢迎窗：无边框，透明窗口用于圆角，页面在确认系统模糊前使用实色内容 ---
+    # 原生 dmg 树里没有这个分支，所以走「替换旧版 / 新增」两条路（见 ensure_linux_block）。
+    src = ensure_linux_block(
+        src,
+        LINUX_WELCOME_RE,
+        welcome_new,
+        '\t\t...platform === "win32" ? {',
+        '欢迎窗：Linux 无边框（frame:false）',
         notes,
     )
 
     # --- 2) 主窗口：透明 + 无边框，交通灯改由 Web 层左置 ---
-    src = replace_once(
+    src = ensure_linux_block(
         src,
-        '''		...process.platform === "linux" && primary ? {
-			titleBarStyle: "hidden",
-			titleBarOverlay: {
-				height: 40,
-				symbolColor: nativeTheme.shouldUseDarkColors ? "#f9fafb" : "#0f1115"
-			}
-		} : {},''',
-        '''		...process.platform === "linux" && primary ? {
-			titleBarStyle: "hidden",
-			transparent: true,
-			backgroundColor: "#00000000",
-			hasShadow: true
-		} : {},''',
-        '主窗口：Linux 透明无边框（交通灯左置）',
+        LINUX_MAIN_RE,
+        main_new,
+        '\t\t...process.platform === "win32" && primary ? {',
+        '主窗口：Linux 无边框（交通灯左置）',
         notes,
     )
 
@@ -346,6 +645,12 @@ def main(app_dir: str) -> int:
         '导入 screen 模块',
         notes,
     )
+
+    src = src.replace('window.isFullScreen() || (process.platform === "linux" && window.isMaximized())',
+                      'window.isFullScreen()')
+    src = src.replace('\t// which only this channel sets. Tiling compositors treat a "fullscreen" window\n'
+                      '\t// as merely maximised, so maximised also counts as fullscreen on Linux.',
+                      '\t// which only this channel sets. Maximized windows keep their traffic lights.')
 
     # --- 4) Linux 全屏事件（data-fullscreen 的来源）---
     src = replace_once(
@@ -360,12 +665,11 @@ def main(app_dir: str) -> int:
 \t}''',
         '''\t// Linux is included here: the renderer keys its fullscreen layout (traffic
 \t// lights hidden, collapse control at the leading edge) off `data-fullscreen`,
-\t// which only this channel sets. Tiling compositors treat a "fullscreen" window
-\t// as merely maximised, so maximised also counts as fullscreen on Linux.
+\t// which only this channel sets. Maximized windows keep their traffic lights.
 \tif (process.platform === "darwin" || process.platform === "win32" || process.platform === "linux") {
 \t\tconst sendFullscreen = () => {
 \t\t\tif (window.isDestroyed()) return;
-\t\t\tconst fullscreen = window.isFullScreen() || (process.platform === "linux" && window.isMaximized());
+\t\t\tconst fullscreen = window.isFullScreen();
 \t\t\twindow.webContents.send(DESKTOP_IPC.windowFullscreen, fullscreen);
 \t\t};
 \t\twindow.on("enter-full-screen", sendFullscreen);
@@ -378,6 +682,9 @@ def main(app_dir: str) -> int:
         notes,
     )
 
+    src = src.replace('window.isFullScreen() || (process.platform === "linux" && window.isMaximized())',
+                      'window.isFullScreen()')
+
     # --- 3) 窗口控制 IPC ---
     anchor = '\tipcMain.handle(DESKTOP_IPC.directoryPick, async (event) => {'
     handler = '''\t/**
@@ -387,9 +694,15 @@ def main(app_dir: str) -> int:
 \t* places native decorations on the right, and the Window Controls Overlay
 \t* cannot be repositioned. Only the sender's own window is ever affected.
 \t*/
-\tipcMain.handle("dsh-desktop:linux-window-control", (event, action) => {
+\tipcMain.handle("dsh-desktop:linux-window-control", async (event, action, css) => {
 \t\tconst window = BrowserWindow.fromWebContents(event.sender);
 \t\tif (window === null || window.isDestroyed()) return false;
+\t\tif (action === "chrome-style") {
+\t\t\tif (typeof css !== "string" || css.length > 65536) return false;
+\t\t\tawait window.webContents.insertCSS(css);
+\t\t\treturn true;
+\t\t}
+\t\tif (action === "blur") return requestLinuxBlur(window);
 \t\tif (action === "close") window.close();
 \t\telse if (action === "minimize") window.minimize();
 \t\telse if (action === "maximize") {
@@ -409,16 +722,53 @@ def main(app_dir: str) -> int:
 \t});
 '''
     if 'dsh-desktop:linux-window-control' in src:
-        notes.append('  · IPC 处理器已存在，跳过')
+        # 升级旧处理器，只扩充一个动作，不改原有窗口控制。
+        src = src.replace('ipcMain.handle("dsh-desktop:linux-window-control", (event, action) => {',
+                          'ipcMain.handle("dsh-desktop:linux-window-control", async (event, action, css) => {', 1)
+        src = src.replace('ipcMain.handle("dsh-desktop:linux-window-control", async (event, action) => {', 'ipcMain.handle("dsh-desktop:linux-window-control", async (event, action, css) => {', 1)
+        if 'if (action === "chrome-style")' not in src:
+            at = src.index('\t\tif (action === "blur")', src.index('ipcMain.handle("dsh-desktop:linux-window-control"')) if 'if (action === "blur")' in src else src.index('\t\tif (action === "close")', src.index('ipcMain.handle("dsh-desktop:linux-window-control"'))
+            style_action = '\t\tif (action === "chrome-style") {\n\t\t\tif (typeof css !== "string" || css.length > 65536) return false;\n\t\t\tawait window.webContents.insertCSS(css);\n\t\t\treturn true;\n\t\t}\n'
+            src = src[:at] + style_action + src[at:]
+        if 'if (action === "blur")' not in src:
+            control_start = src.index('ipcMain.handle("dsh-desktop:linux-window-control"')
+            close_at = src.index('\t\tif (action === "close")', control_start)
+            src = src[:close_at] + '\t\tif (action === "blur") return requestLinuxBlur(window);\n' + src[close_at:]
+        notes.append('  · IPC 处理器已存在，已确保系统模糊动作')
     else:
         src = replace_once(src, anchor, handler + anchor, '窗口控制 IPC 处理器', notes)
 
-    open(main_js, 'w', encoding='utf8').write(src)
+    blur_block = f'{BLUR_BEGIN}\n{MAIN_BLUR_FN}\n{BLUR_END}'
+    if BLUR_BEGIN in src:
+        begin = src.index(BLUR_BEGIN)
+        finish = src.index(BLUR_END, begin) + len(BLUR_END)
+        src = src[:begin] + blur_block + src[finish:]
+    else:
+        src += '\n' + blur_block + '\n'
+    Path(main_js).write_text(src, encoding='utf8')
     print(f'== {main_js}')
     notes.append(f'  · IPC 处理器共 {src.count("dsh-desktop:linux-window-control")} 处（应为 1）')
     print('\n'.join(notes))
     print(inject_preload(f'{app_dir}/lib/preload-app.cjs', MAIN_MARK_CALL, ''))
     print(inject_preload(f'{app_dir}/lib/preload-welcome.cjs', WELCOME_MARK_CALL, WELCOME_EXTRA_CSS))
+    # 报 ✗ 不等于构建可以继续：最终态对不上就返回非零（auto-build.sh 的 set -e 会拦下）。
+    return verify_end_state(app_dir)
+
+
+def main(app_dir: str) -> int:
+    import shutil
+    import tempfile
+    target = Path(app_dir) / "lib"
+    names = ("main.js", "preload-app.cjs", "preload-welcome.cjs")
+    with tempfile.TemporaryDirectory(prefix="dsh-chrome-patch-") as folder:
+        staged = Path(folder)
+        (staged / "lib").mkdir()
+        for name in names:
+            shutil.copy2(target / name, staged / "lib" / name)
+        if apply_patch(str(staged)) != 0:
+            return 1
+        for name in names:
+            shutil.copyfile(staged / "lib" / name, target / name)
     return 0
 
 

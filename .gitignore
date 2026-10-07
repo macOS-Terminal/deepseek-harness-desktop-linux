@@ -15,3 +15,9 @@
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# Python helper/test caches
+__pycache__/
+
+# 本机第三方插件修复，不属于 Desktop 打包补丁
+/local-fixes/dsh-usage-settings/
