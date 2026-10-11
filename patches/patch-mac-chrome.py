@@ -26,6 +26,8 @@
 用法: patch-mac-chrome.py <resources/app 目录>
 """
 import sys
+import subprocess
+from pathlib import Path
 
 TITLEBAR_HEIGHT = 48
 
@@ -289,9 +291,28 @@ __EXTRA_CSS__`;
 }
 '''
 
-# 欢迎窗是独立页面（#root 自身铺 tint，.titlebar 已带 app-region:drag），
-# 只需给交通灯让出左侧空间，不套用主窗的 frame/sidebar 规则。
-WELCOME_EXTRA_CSS = '\nhtml[data-dsh-mac-chrome] .titlebar { padding-left: 68px; }\n'
+# Welcome has a full-window tint, not a sidebar. Keep its native theme colour
+# and remove the tint's alpha when the compositor requires an opaque surface.
+WELCOME_SURFACE_CSS = """
+/* dsh-welcome-surface:v1: no sidebar material on a full-window welcome page. */
+html[data-dsh-mac-chrome] #dsh-mac-vibrancy { display: none !important; }
+html[data-dsh-mac-chrome][data-dsh-opaque-sidebar] #root {
+    background: rgb(from var(--welcome-tint) r g b / 1) !important;
+}
+"""
+WELCOME_EXTRA_CSS = '\nhtml[data-dsh-mac-chrome] .titlebar { padding-left: 68px; }\n' + WELCOME_SURFACE_CSS
+
+
+def upgrade_welcome_surface(app_dir: str) -> None:
+    path = Path(app_dir) / 'lib/preload-welcome.cjs'
+    src = path.read_text(encoding='utf8')
+    if 'dsh-welcome-surface:v1' in src:
+        return
+    anchor = 'html[data-dsh-mac-chrome] .titlebar { padding-left: 68px; }'
+    if src.count(anchor) != 1:
+        raise ValueError(f'Unknown welcome chrome CSS in {path}; refusing to guess')
+    path.write_text(src.replace(anchor, anchor + WELCOME_SURFACE_CSS, 1), encoding='utf8')
+
 
 # 自带整页底色的皮肤插件（dsh-client-liang-intensity-skin 在 body 上铺不透明 page
 # 色，并用一个 fixed 的 .liang-skin-backdrop 盖满视口）会压在 #dsh-mac-vibrancy
@@ -502,7 +523,11 @@ def main(app_dir: str) -> int:
     print('\n'.join(notes))
     print(inject_preload(f'{app_dir}/lib/preload-app.cjs', MAIN_MARK_CALL, MAIN_EXTRA_CSS))
     print(inject_preload(f'{app_dir}/lib/preload-welcome.cjs', WELCOME_MARK_CALL, WELCOME_EXTRA_CSS))
-    return 0
+    upgrade_welcome_surface(app_dir)
+    status = subprocess.call([sys.executable, str(Path(__file__).with_name("patch-kde-material.py")), app_dir])
+    if status:
+        return status
+    return subprocess.call([sys.executable, str(Path(__file__).with_name("patch-fullscreen-reveal.py")), app_dir])
 
 
 if __name__ == '__main__':

@@ -5,6 +5,9 @@ patch-mac-chrome.py 是幂等的（已注入就跳过），因此修复已注入
 在原地做等价替换。用法: upgrade-mac-chrome.py <resources/app 目录>
 """
 import sys
+import subprocess
+import runpy
+from pathlib import Path
 
 OLD_CSS_BLOCK = """/* macOS vibrancy approximation: translucent sidebar over a blurred backdrop. */
 html[data-dsh-mac-chrome] [class*="_sidebarCol"] {
@@ -222,7 +225,11 @@ def main(app_dir: str) -> int:
         open(path, 'w', encoding='utf8').write(src)
         print(f'== {path}')
         print('\n'.join(notes))
-    return 0
+    runpy.run_path(str(Path(__file__).with_name("patch-mac-chrome.py")))["upgrade_welcome_surface"](app_dir)
+    status = subprocess.call([sys.executable, str(Path(__file__).with_name("patch-kde-material.py")), app_dir])
+    if status:
+        return status
+    return subprocess.call([sys.executable, str(Path(__file__).with_name("patch-fullscreen-reveal.py")), app_dir])
 
 
 if __name__ == '__main__':
