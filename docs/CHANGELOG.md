@@ -140,6 +140,87 @@ ${recommends_line}Homepage: https://harness.deepseek.com
 > 注意：`system` 变体因为有 `Recommends` 字段，原本不会触发该问题；
 > 只有 **`bundled` 变体**（`rec` 为空）会产生空行 —— 这也解释了为何只有部分用户遇到。
 
+### 修复 — 采纳社区 PR #2 的三项修正，并为 KDE 增加不透明回退
+
+（对应 [PR #2](https://github.com/macOS-Terminal/deepseek-harness-desktop-linux/pull/2) 提出的问题）
+
+**1. `[class*="_fade"]` 选择器过宽，误伤进程步骤的淡出**
+
+应用的列表淡出类不止一个：
+
+| 类名 | 来源 | 绘制方式 |
+|---|---|---|
+| `_7514NG_fade` | workspace（侧栏列表） | `background` 渐变 |
+| `TXqvFW_fadeTop/Bottom`、`JXrxFq_fadeTop/Bottom` | chat（进程步骤） | **仅** `mask-image` |
+
+原规则同时命中这 5 个类，给只该用遮罩的元素强加了背景渐变。
+
+修复：限定到侧栏 —— `html[data-dsh-mac-chrome] [class*="_sidebarCol"] [class*="_fade"]`。
+已确认 `_7514NG_fade` 位于侧栏内（layout 的 `sidebarCol` 以 `children: sidebar` 渲染
+`renderSlot("sidebar")`，正是 workspace 注册的插槽），因此限定后仍能命中目标。
+
+实测（Chromium 内加载真实注入的 CSS）：
+
+| 元素 | 修复前 | 修复后 |
+|---|---|---|
+| 侧栏 fade | 渐变 | `linear-gradient(rgba(0,0,0,0), color(srgb …))` ✓ 修复保留 |
+| 进程步骤 fade | 被加上 `linear-gradient(…, rgb(200,30,30))` | **`none`** ✓ 不再误伤 |
+
+**2. 欢迎页样式被 CSP 丢弃**
+
+欢迎页的 CSP 为 `style-src 'self'`，不含 `'unsafe-inline'`。实测该策略下
+`<style>` 节点**能插入但规则不生效**：
+
+```
+PROBE_BEFORE_INSERT {"styleTags":1,"inlineApplied":"rgba(0, 0, 0, 0)"}   ← 节点在，样式没生效
+PROBE_AFTER_INSERTCSS bg=rgb(1, 2, 3)                                    ← insertCSS 有效
+```
+
+修复：样式改由 `webContents.insertCSS()` 注入（经 `chrome-style` IPC 送达），
+不受页面 `style-src` 约束；`preload` 侧不再创建 `<style>` 节点。
+
+**3. 侧栏折叠按钮存在废弃规则与声明顺序缺陷**
+
+- `preload-welcome.cjs` 残留 3 条旧的 `left: 88px` 规则（已被 128px 规则以更高
+  特异性覆盖，属死代码；已删除以免误导维护）；
+- 更严重的是 `observedSidebar` / `sidebarObserver` 声明位于 `apply()` **首次调用之后**，
+  `const`/`let` 的暂时性死区导致首次 `apply()` 抛 `ReferenceError`，
+  **整块 chrome 注入失效**（交通灯与 vibrancy 层都不创建）。实测捕获到：
+
+  ```
+  CONSOLE Uncaught ReferenceError: sidebarObserver is not defined
+  STATE {"bodyKids":["root"],"hasLights":false,"hasVib":false}
+  ```
+
+  修复：把两个声明前置到 `apply` 定义之前。修复后：
+
+  ```
+  IPC_CALLS [{"action":"chrome-style","cssLen":7521}]
+  ATTRS {"mac":true,"titlebar":true,"lights":true,"vib":true}
+  ```
+
+**4. KDE 会话下侧栏改为不透明（设计取舍）**
+
+PR 主张默认不透明、显式开启才透明。本移植保留**透明为默认**（符合 macOS 观感），
+仅在检测到 KDE 会话时回退为不透明 —— KDE 的 X11 合成对半透明窗口支持较差、
+Wayland 下模糊按窗口生效，半透明侧栏易显得发灰或不可读。
+
+检测在 preload 内完成（已实测 sandbox preload 可读 `process.env`，
+`XDG_CURRENT_DESKTOP` 等 91 个变量可见），命中 `kde` / `plasma` 或 `KDE_FULL_SESSION`
+时设置 `data-dsh-opaque-sidebar`，对应 CSS 把侧栏还原为 `--dsw-specific-sidebar-fill`
+并隐藏 vibrancy 层。
+
+实测（Chromium 内验证规则匹配）：
+```
+KDECHECK {"kdeRuleCount":4,"sidebarMatchedUnderKde":true,
+          "sample":"html[data-dsh-mac-chrome][data-dsh-opaque-sidebar] [class*=\"_sidebarCol\"] { background: var(--ds…"}
+```
+
+> 说明：PR 另有「最大化即全屏」的回退（删除 `syncTilingFullscreen`）和整套
+> 自动构建工具链，本次**未采纳** —— 前者在 niri 等平铺合成器上会重现
+> 「全屏不隐藏交通灯」（本机实测 niri 全屏后 `isFullScreen()=false`），
+> 后者属于新增能力而非缺陷修复，留待单独评估。
+
 ### 修复 — 折叠侧栏时新建按钮与交通灯重叠（用户实测反馈）
 
 折叠侧栏后，应用的导轨按钮位置是**写死**的：
@@ -320,6 +401,9 @@ pointer-events:none`），侧栏本身只保留 `background:0 0`。这样：
 | 侧栏底部淡出条跟随半透明底色、无实心暗带 | ✅ |
 | 折叠态导轨按钮避开交通灯（新建 88px / 展开 128px） | ✅ |
 | deb control 文件无空行（分段解析段落数=1） | ✅ |
+| fade 规则不误伤进程步骤（侧栏 fade 保留、chat fade 背景为 none） | ✅ |
+| 欢迎页样式经 insertCSS 生效（CSP style-src 'self' 下） | ✅ |
+| KDE 会话回退不透明侧栏（规则匹配验证） | ✅ |
 | 标题栏补丁存在于两架构包内 | ✅ 10/10 |
 | ARM64 node / python / sharp（qemu，取自成品 deb） | ✅ |
 | `sha256sum -c`（10 个包） | ✅ 10/10 |

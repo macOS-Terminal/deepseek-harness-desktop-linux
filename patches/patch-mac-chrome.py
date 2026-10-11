@@ -46,7 +46,6 @@ function installLinuxChrome() {
 	const HEIGHT = __TITLEBAR_HEIGHT__;
 	const LIGHTS_ID = "dsh-mac-lights";
 	const VIBRANCY_ID = "dsh-mac-vibrancy";
-	const STYLE_ID = "dsh-mac-chrome-style";
 	const CSS = `
 html[data-dsh-mac-chrome] [class*="_frame"] { background: 0 0 !important; }
 html[data-dsh-mac-chrome] [class*="_frame"]::before {
@@ -131,6 +130,26 @@ html[data-dsh-mac-chrome][data-fullscreen] [class*="_toggle"] { left: 12px !impo
    traffic lights) and parks it at 88px; our lights sit at 16..68px, so the seat
    must stay to their right in every state rather than sliding underneath. */
 html[data-dsh-mac-chrome] [class*="_leadingSeat"] { left: 88px !important; }
+
+/* The bundle's list-edge fade washes towards the opaque sidebar fill, which
+   would paint a hard band over a translucent sidebar. Scope the override to the
+   sidebar: the process-step scroll bodies also carry _fadeTop/_fadeBottom
+   classes, and they paint with mask-image only, so a background here would
+   smear a gradient across reasoning text. */
+html[data-dsh-mac-chrome] [class*="_sidebarCol"] [class*="_fade"] {
+	background: linear-gradient(to bottom, transparent, var(--dsh-linux-sidebar-tint)) !important;
+}
+
+/* Desktop environments whose compositor does not blend a translucent window
+   reliably (KDE Plasma is the notable case) keep the original opaque sidebar,
+   so the window never reads as a washed-out or unreadable surface there. */
+html[data-dsh-mac-chrome][data-dsh-opaque-sidebar] [class*="_sidebarCol"] { background: var(--dsw-specific-sidebar-fill) !important; }
+html[data-dsh-mac-chrome][data-dsh-opaque-sidebar] #dsh-mac-vibrancy { display: none !important; }
+html[data-dsh-mac-chrome][data-dsh-opaque-sidebar] [class*="_frame"]::before {
+	background: linear-gradient(to right, var(--dsw-specific-sidebar-fill) 0 var(--dsh-linux-sidebar-width, 280px),
+		var(--dsw-alias-bg-base) var(--dsh-linux-sidebar-width, 280px) 100%) !important;
+}
+html[data-dsh-mac-chrome][data-dsh-opaque-sidebar] [class*="_sidebarCol"] [class*="_root"] { background: 0 0 !important; }
 __EXTRA_CSS__`;
 	/**
 	 * Tiling compositors (niri, Hyprland, sway) fill the screen without telling
@@ -148,9 +167,29 @@ __EXTRA_CSS__`;
 		if (effective) root.dataset.fullscreen = "true";
 		else delete root.dataset.fullscreen;
 	};
+	let chromeStylePending = false;
+	let chromeStyleApplied = false;
+	/**
+	 * Install the chrome stylesheet through the shell instead of a <style> node.
+	 * The first-run welcome page sends `style-src 'self'`, which permits the node
+	 * but drops every rule in it; webContents.insertCSS is not subject to that.
+	 */
+	const syncChromeStyle = async () => {
+		if (chromeStyleApplied || chromeStylePending) return;
+		chromeStylePending = true;
+		try {
+			chromeStyleApplied = await electron.ipcRenderer.invoke(CHANNEL, "chrome-style", CSS) === true;
+		} catch {
+			/* Channel not ready yet; the next apply() retries. */
+		} finally {
+			chromeStylePending = false;
+		}
+	};
 	syncTilingFullscreen();
 	window.addEventListener("resize", syncTilingFullscreen);
 	let lights = null;
+	let observedSidebar = null;
+	const sidebarObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => apply()) : null;
 	const send = (action) => { electron.ipcRenderer.invoke(CHANNEL, action); };
 	const buildLights = () => {
 		const host = document.createElement("div");
@@ -182,6 +221,14 @@ __EXTRA_CSS__`;
 		if (root === null) return;
 		root.dataset.windowsTitlebar = "";
 		root.dataset.dshMacChrome = "";
+		// KDE Plasma composites a translucent window poorly (X11) or applies blur
+		// per-window (Wayland), so the sidebar stays opaque there. Verified in a
+		// sandboxed preload: process.env is readable (XDG_CURRENT_DESKTOP included).
+		const desktopSession = `${process.env.XDG_CURRENT_DESKTOP ?? ""} ${process.env.DESKTOP_SESSION ?? ""}`.toLowerCase();
+		const kdeSession = desktopSession.includes("kde") || desktopSession.includes("plasma")
+			|| (process.env.KDE_FULL_SESSION !== void 0 && process.env.KDE_FULL_SESSION !== "");
+		if (kdeSession) root.dataset.dshOpaqueSidebar = "";
+		else delete root.dataset.dshOpaqueSidebar;
 		root.style.setProperty("--dsh-windows-titlebar-height", `${HEIGHT}px`);
 		const sidebar = document.querySelector('[class*="_sidebarCol"]');
 		if (sidebar !== null) {
@@ -199,12 +246,7 @@ __EXTRA_CSS__`;
 				}
 			}
 		}
-		if (document.getElementById(STYLE_ID) === null) {
-			const style = document.createElement("style");
-			style.id = STYLE_ID;
-			style.textContent = CSS;
-			(document.head ?? root).appendChild(style);
-		}
+		syncChromeStyle();
 		if (document.getElementById(VIBRANCY_ID) === null && document.body !== null) {
 			const vibrancy = document.createElement("div");
 			vibrancy.id = VIBRANCY_ID;
@@ -229,8 +271,6 @@ __EXTRA_CSS__`;
 	// tens of seconds, so keep re-measuring instead of sampling a few early ticks.
 	const poll = setInterval(apply, 500);
 	setTimeout(() => clearInterval(poll), 120000);
-	let observedSidebar = null;
-	const sidebarObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => apply()) : null;
 	let scheduled = false;
 	const observer = new MutationObserver(() => {
 		if (scheduled) return;
@@ -252,6 +292,41 @@ __EXTRA_CSS__`;
 # 欢迎窗是独立页面（#root 自身铺 tint，.titlebar 已带 app-region:drag），
 # 只需给交通灯让出左侧空间，不套用主窗的 frame/sidebar 规则。
 WELCOME_EXTRA_CSS = '\nhtml[data-dsh-mac-chrome] .titlebar { padding-left: 68px; }\n'
+
+# 自带整页底色的皮肤插件（dsh-client-liang-intensity-skin 在 body 上铺不透明 page
+# 色，并用一个 fixed 的 .liang-skin-backdrop 盖满视口）会压在 #dsh-mac-vibrancy
+# （z-index -1）之上，侧栏那条毛玻璃就退化成平涂，窗口也不再透出桌面。这里把皮肤的
+# 页面层从侧栏条带里挖掉：body 底色恢复透明，backdrop 用 mask 在条带处透明（留
+# 24px 过渡与 frame 渐变对齐），皮肤右侧的人像不受影响。
+MAIN_EXTRA_CSS = '''
+/* Guest skins that paint their own page layer cover the vibrancy layer and the
+   desktop behind it: dsh-client-liang-intensity-skin sets an opaque page colour
+   on the document and fills the viewport with a fixed .liang-skin-backdrop, both
+   of which paint above #dsh-mac-vibrancy (z-index -1). Keep the skin's page
+   everywhere except the sidebar strip so the frosted surface stays glass. */
+html[data-dsh-mac-chrome] body[data-liang-skin="on"],
+html[data-dsh-mac-chrome] body[data-liang-skin="on"][data-ds-dark-theme]:is(
+\t[data-liang-stage="0"],
+\t[data-liang-stage="1"],
+\t[data-liang-stage="2"],
+\t[data-liang-stage="3"]
+) {
+\tbackground: transparent !important;
+}
+/* The backdrop keeps its own page fill; masking it out over the strip reveals the
+   layer behind the window without touching the skin's right-hand portrait. The
+   24px ramp lines the cut up with the frame's own sidebar gradient. */
+html[data-dsh-mac-chrome] body[data-liang-skin="on"] .liang-skin-backdrop {
+\t-webkit-mask-image: linear-gradient(to right,
+\t\ttransparent 0 calc(var(--dsh-linux-sidebar-width, 280px) - 24px),
+\t\tblack var(--dsh-linux-sidebar-width, 280px),
+\t\tblack 100%);
+\tmask-image: linear-gradient(to right,
+\t\ttransparent 0 calc(var(--dsh-linux-sidebar-width, 280px) - 24px),
+\t\tblack var(--dsh-linux-sidebar-width, 280px),
+\t\tblack 100%);
+}
+'''
 
 PRELOAD_FULLSCREEN_OLD = '''function syncWindowFullscreen() {
 	if (process.platform !== "darwin" && process.platform !== "win32") return;'''
@@ -387,9 +462,17 @@ def main(app_dir: str) -> int:
 \t* places native decorations on the right, and the Window Controls Overlay
 \t* cannot be repositioned. Only the sender's own window is ever affected.
 \t*/
-\tipcMain.handle("dsh-desktop:linux-window-control", (event, action) => {
+\tipcMain.handle("dsh-desktop:linux-window-control", async (event, action, css) => {
 \t\tconst window = BrowserWindow.fromWebContents(event.sender);
 \t\tif (window === null || window.isDestroyed()) return false;
+\t\tif (action === "chrome-style") {
+\t\t\t// Injected from here rather than as a <style> node: the welcome page CSP
+\t\t\t// (style-src 'self') keeps the node but discards its rules, whereas
+\t\t\t// insertCSS is exempt from the page's style-src.
+\t\t\tif (typeof css !== "string" || css.length > 65536) return false;
+\t\t\tawait event.sender.insertCSS(css);
+\t\t\treturn true;
+\t\t}
 \t\tif (action === "close") window.close();
 \t\telse if (action === "minimize") window.minimize();
 \t\telse if (action === "maximize") {
@@ -417,7 +500,7 @@ def main(app_dir: str) -> int:
     print(f'== {main_js}')
     notes.append(f'  · IPC 处理器共 {src.count("dsh-desktop:linux-window-control")} 处（应为 1）')
     print('\n'.join(notes))
-    print(inject_preload(f'{app_dir}/lib/preload-app.cjs', MAIN_MARK_CALL, ''))
+    print(inject_preload(f'{app_dir}/lib/preload-app.cjs', MAIN_MARK_CALL, MAIN_EXTRA_CSS))
     print(inject_preload(f'{app_dir}/lib/preload-welcome.cjs', WELCOME_MARK_CALL, WELCOME_EXTRA_CSS))
     return 0
 
