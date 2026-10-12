@@ -5,7 +5,7 @@ import sys
 import re
 
 CSS = '''
-/* dsh-fullscreen-reveal:v8 */
+/* dsh-fullscreen-reveal:v9 */
 /* Wayland cannot report a global cursor; its fullscreen strip must emit DOM events. */
 html[data-dsh-mac-chrome][data-fullscreen][data-dsh-dom-pointer] [class*="_frame"]::before,
 html[data-dsh-mac-chrome][data-fullscreen][data-dsh-dom-pointer] .titlebar { -webkit-app-region: no-drag !important; }
@@ -38,7 +38,7 @@ html[data-dsh-mac-chrome][data-fullscreen][data-dsh-reveal-controls] #dsh-mac-li
 }
 '''
 JS = r'''
-	// dsh-fullscreen-reveal:v8
+	// dsh-fullscreen-reveal:v9
 	let revealHideTimer = null;
 	const hideFullscreenControls = () => {
 		clearTimeout(revealHideTimer);
@@ -46,6 +46,8 @@ JS = r'''
 		delete document.documentElement.dataset.dshRevealControls;
 	};
 	const revealFullscreenControls = () => {
+		// DOM hover must use the same focus policy as native pointer polling.
+		if (!document.hasFocus()) { hideFullscreenControls(); return; }
 		clearTimeout(revealHideTimer);
 		revealHideTimer = null;
 		if (document.documentElement.hasAttribute("data-fullscreen")) document.documentElement.dataset.dshRevealControls = "";
@@ -83,6 +85,7 @@ JS = r'''
 		return bounds !== null && event.clientX >= bounds.left && event.clientX < bounds.right && event.clientY >= bounds.top && event.clientY < bounds.bottom;
 	};
 	const updateFullscreenPointer = (event) => {
+		if (!document.hasFocus()) { hideFullscreenControls(); return; }
 		if (!document.documentElement.hasAttribute("data-fullscreen")) return;
 		if (event.pointerType === "touch") return;
 		if (event.clientX >= 0 && event.clientX < window.innerWidth && event.clientY >= 0 && event.clientY <= 4) revealFullscreenControls();
@@ -162,10 +165,10 @@ def transform_main(src):
     return src.replace(anchor,MAIN_POINTER+'\n'+anchor,1)
 
 def transform(src):
-    if '// dsh-fullscreen-reveal:v8' in src:return src
-    if any(f'// dsh-fullscreen-reveal:v{version}' in src for version in (2, 3, 4, 5, 6, 7)):
-        css_pattern = r'\n/\* dsh-fullscreen-reveal:v[234567] \*/.*?#dsh-mac-lights \{ transition: none !important; \}\n\}\n'
-        js_pattern = r'\n\t// dsh-fullscreen-reveal:v[234567].*?\telse document.addEventListener\("DOMContentLoaded", observeFullscreenReveal, \{ once: true \}\);\n'
+    if '// dsh-fullscreen-reveal:v9' in src:return src
+    if any(f'// dsh-fullscreen-reveal:v{version}' in src for version in (2, 3, 4, 5, 6, 7, 8)):
+        css_pattern = r'\n/\* dsh-fullscreen-reveal:v[2345678] \*/.*?#dsh-mac-lights \{ transition: none !important; \}\n\}\n'
+        js_pattern = r'\n\t// dsh-fullscreen-reveal:v[2345678].*?\telse document.addEventListener\("DOMContentLoaded", observeFullscreenReveal, \{ once: true \}\);\n'
         src, css_count = re.subn(css_pattern, lambda _: CSS, src, count=1, flags=re.S)
         src, js_count = re.subn(js_pattern, lambda _: JS, src, count=1, flags=re.S)
         if css_count != 1 or js_count != 1:raise ValueError('Unknown previous fullscreen reveal patch')

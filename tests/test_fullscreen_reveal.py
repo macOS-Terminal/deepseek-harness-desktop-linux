@@ -23,3 +23,12 @@ class FullscreenRevealTests(unittest.TestCase):
   self.assertEqual(r.returncode,0,r.stdout+r.stderr)
  def test_unknown_payload_rejected(self):
   with self.assertRaises(ValueError):reveal.transform('unknown preload')
+
+ def test_upgrade_previous_patch_keeps_personal_styles(self):
+  src=chrome.PRELOAD_FN.replace('__TITLEBAR_HEIGHT__','48').replace('__EXTRA_CSS__',chrome.WELCOME_EXTRA_CSS)
+  old=reveal.transform(src).replace('dsh-fullscreen-reveal:v9','dsh-fullscreen-reveal:v8')+'\n/* personal styles remain */'
+  patched=reveal.transform(old)
+  self.assertIn('dsh-fullscreen-reveal:v9',patched)
+  self.assertNotIn('dsh-fullscreen-reveal:v8',patched)
+  self.assertTrue(patched.endswith('/* personal styles remain */'))
+  self.assertEqual(reveal.transform(patched),patched)
