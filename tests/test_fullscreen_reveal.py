@@ -26,9 +26,20 @@ class FullscreenRevealTests(unittest.TestCase):
 
  def test_upgrade_previous_patch_keeps_personal_styles(self):
   src=chrome.PRELOAD_FN.replace('__TITLEBAR_HEIGHT__','48').replace('__EXTRA_CSS__',chrome.WELCOME_EXTRA_CSS)
-  old=reveal.transform(src).replace('dsh-fullscreen-reveal:v9','dsh-fullscreen-reveal:v8')+'\n/* personal styles remain */'
+  old=reveal.transform(src).replace('dsh-fullscreen-reveal:v10','dsh-fullscreen-reveal:v9')+'\n/* personal styles remain */'
   patched=reveal.transform(old)
-  self.assertIn('dsh-fullscreen-reveal:v9',patched)
-  self.assertNotIn('dsh-fullscreen-reveal:v8',patched)
+  self.assertIn('dsh-fullscreen-reveal:v10',patched)
+  self.assertNotIn('dsh-fullscreen-reveal:v9',patched)
   self.assertTrue(patched.endswith('/* personal styles remain */'))
   self.assertEqual(reveal.transform(patched),patched)
+
+ def test_sidebar_motion_and_legacy_position_rules_are_scoped(self):
+  import re
+  for selector in re.findall(r'([^{}]+)\{',reveal.CSS):
+   for part in selector.split(','):
+    if 'button[class*="_toggle"]' in part:
+     self.assertIn('[class*="_sidebarCol"]',part)
+  src=chrome.PRELOAD_FN.replace('__TITLEBAR_HEIGHT__','48').replace('__EXTRA_CSS__',chrome.WELCOME_EXTRA_CSS)
+  patched=reveal.transform(src)
+  self.assertNotIn('html[data-dsh-mac-chrome][data-fullscreen] [class*="_toggle"] {',patched)
+  self.assertIn('html[data-dsh-mac-chrome][data-fullscreen] [class*="_sidebarCol"] [class*="_toggle"] {',patched)

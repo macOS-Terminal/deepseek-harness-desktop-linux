@@ -5,7 +5,7 @@ import sys
 import re
 
 CSS = '''
-/* dsh-fullscreen-reveal:v9 */
+/* dsh-fullscreen-reveal:v10 */
 /* Wayland cannot report a global cursor; its fullscreen strip must emit DOM events. */
 html[data-dsh-mac-chrome][data-fullscreen][data-dsh-dom-pointer] [class*="_frame"]::before,
 html[data-dsh-mac-chrome][data-fullscreen][data-dsh-dom-pointer] .titlebar { -webkit-app-region: no-drag !important; }
@@ -15,11 +15,11 @@ html[data-dsh-mac-chrome][data-fullscreen][data-dsh-dom-pointer] .titlebar { -we
 }
 html[data-dsh-mac-chrome][data-fullscreen] #dsh-fullscreen-reveal { display: block; }
 /* Reserve room by moving the existing controls, without painting a new surface. */
-html[data-dsh-mac-chrome][data-fullscreen] button[class*="_toggle"],
+html[data-dsh-mac-chrome][data-fullscreen] [class*="_sidebarCol"] button[class*="_toggle"],
 html[data-dsh-mac-chrome][data-fullscreen] [class*="_collapsed"] button[class*="_newSession"] {
     translate: 0 0; transition: translate 160ms ease 80ms;
 }
-html[data-dsh-mac-chrome][data-fullscreen][data-dsh-reveal-controls] button[class*="_toggle"],
+html[data-dsh-mac-chrome][data-fullscreen][data-dsh-reveal-controls] [class*="_sidebarCol"] button[class*="_toggle"],
 html[data-dsh-mac-chrome][data-fullscreen][data-dsh-reveal-controls] [class*="_collapsed"] button[class*="_newSession"] {
     translate: 76px 0; transition-delay: 0ms;
 }
@@ -32,13 +32,13 @@ html[data-dsh-mac-chrome][data-fullscreen][data-dsh-reveal-controls] #dsh-mac-li
     transition: opacity 100ms ease 160ms, visibility 0s linear 160ms;
 }
 @media (prefers-reduced-motion: reduce) {
-    html[data-dsh-mac-chrome][data-fullscreen] button[class*="_toggle"],
+    html[data-dsh-mac-chrome][data-fullscreen] [class*="_sidebarCol"] button[class*="_toggle"],
     html[data-dsh-mac-chrome][data-fullscreen] [class*="_collapsed"] button[class*="_newSession"],
     html[data-dsh-mac-chrome][data-fullscreen] #dsh-mac-lights { transition: none !important; }
 }
 '''
 JS = r'''
-	// dsh-fullscreen-reveal:v9
+	// dsh-fullscreen-reveal:v10
 	let revealHideTimer = null;
 	const hideFullscreenControls = () => {
 		clearTimeout(revealHideTimer);
@@ -165,10 +165,14 @@ def transform_main(src):
     return src.replace(anchor,MAIN_POINTER+'\n'+anchor,1)
 
 def transform(src):
-    if '// dsh-fullscreen-reveal:v9' in src:return src
-    if any(f'// dsh-fullscreen-reveal:v{version}' in src for version in (2, 3, 4, 5, 6, 7, 8)):
-        css_pattern = r'\n/\* dsh-fullscreen-reveal:v[2345678] \*/.*?#dsh-mac-lights \{ transition: none !important; \}\n\}\n'
-        js_pattern = r'\n\t// dsh-fullscreen-reveal:v[2345678].*?\telse document.addEventListener\("DOMContentLoaded", observeFullscreenReveal, \{ once: true \}\);\n'
+    # Scope legacy position rules too, including previously patched app trees.
+    for prefix in ('html[data-dsh-mac-chrome]:not([data-fullscreen])', 'html[data-dsh-mac-chrome][data-fullscreen]'):
+        for control in ('[class*="_toggle"]', '[class*="_collapsed"] [class*="_toggle"]'):
+            src = src.replace(prefix + ' ' + control + ' {', prefix + ' [class*="_sidebarCol"] ' + control + ' {')
+    if '// dsh-fullscreen-reveal:v10' in src:return src
+    if any(f'// dsh-fullscreen-reveal:v{version}' in src for version in (2, 3, 4, 5, 6, 7, 8, 9)):
+        css_pattern = r'\n/\* dsh-fullscreen-reveal:v[23456789] \*/.*?#dsh-mac-lights \{ transition: none !important; \}\n\}\n'
+        js_pattern = r'\n\t// dsh-fullscreen-reveal:v[23456789].*?\telse document.addEventListener\("DOMContentLoaded", observeFullscreenReveal, \{ once: true \}\);\n'
         src, css_count = re.subn(css_pattern, lambda _: CSS, src, count=1, flags=re.S)
         src, js_count = re.subn(js_pattern, lambda _: JS, src, count=1, flags=re.S)
         if css_count != 1 or js_count != 1:raise ValueError('Unknown previous fullscreen reveal patch')
