@@ -2,77 +2,107 @@
 """Relax the Electron V8 fingerprint gate in node-addon-require-builtin.
 
 Why: the addon accepts only three exact Electron fingerprints
-(43.0.0 / 44.0.0 / 45.0.0-alpha.6). A distribution Electron such as 44.4.5 reports a
-different V8 build and is rejected, which aborts Host startup. The three profiles it
-compares differ only in a version label — the ABI fields are compiled-in constants —
+(43.0.0 / 44.0.0 / 45.0.0-alpha.6). A distribution Electron (44.4.5, 44.7.0, …)
+reports a different V8 build and is rejected, which aborts Host startup. The three
+profiles differ only in a version label — the ABI fields are compiled-in constants —
 so relaxing the comparison is safe and avoids downgrading Electron.
 
-What: find `require_builtin::(anonymous namespace)::Matches(...)` and make it return
-true unconditionally, so any Electron runtime is accepted.
+What: locate `require_builtin::(anonymous namespace)::Matches(...)` through the ELF
+symbol table and make it return true unconditionally.
+
+Why symbols, not offsets: the previous implementation hardcoded a file offset and
+fell back to scanning for the function prologue. On a newer addon build that scan
+matched 233 unrelated functions and patched the wrong one, silently corrupting the
+binary while reporting success. The symbol table names the exact function, so this
+version either patches the right address or refuses to patch at all.
 
 Usage: patch-fingerprint.py <path-to-napi-v9.node>
 """
 import struct
-import subprocess
 import sys
+from pathlib import Path
 
-X64_MATCHES_OFFSET = 0x17CDD
-X64_ORIGINAL = bytes([0x55, 0x48, 0x89, 0xE5, 0x48, 0x83, 0xEC, 0x10, 0x48])  # push rbp; mov rbp,rsp; sub rsp,0x10
-X64_PATCH = bytes([0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3])                        # mov eax,1 ; ret
-
-ARM64_PROLOGUE = bytes.fromhex('fd7bbea9fd030091')                             # stp x29,x30,[sp,#-16]! ; mov x29,sp
-ARM64_PATCH = bytes.fromhex('20008052c0035fd6')                                # mov w0,#1 ; ret
-
+# Mangled name fragment of require_builtin::(anonymous namespace)::Matches(
 MATCHES_SYMBOL = b'MatchesERKNS2_19ElectronProfileSpecE'
 
-
-def find_matches_offset(data: bytes, is_arm64: bool) -> int:
-    """Locate Matches via the symbol table when available, else by prologue scan."""
-    # The mangled name is in .strtab either way; resolve its address through nm-like parsing.
-    try:
-        out = subprocess.run(['nm', '-C', '-'], input=b'', capture_output=True)  # unused, keeps nm import local
-    except Exception:
-        pass
-    return -1
+# Byte sequences per ELF machine type.
+#   x64   : push rbp; mov rbp,rsp; sub rsp,0x10   -> mov eax,1; ret
+#   arm64 : stp x29,x30,[sp,#-16]!; mov x29,sp    -> mov w0,#1; ret
+LAYOUTS = {
+    62: (bytes.fromhex('554889e54883ec1048'), bytes.fromhex('b801000000c3')),
+    183: (bytes.fromhex('fd7bbea9fd030091'), bytes.fromhex('20008052c0035fd6')),
+}
 
 
-def main() -> int:
-    path = sys.argv[1]
-    data = bytearray(open(path, 'rb').read())
-    is_arm64 = 'linux-arm64' in path
+def find_symbol(data, fragment):
+    """Return (machine, file_offset, size) for a unique symbol match.
 
-    # Prefer the exact known layout, then fall back to a prologue scan near it.
-    if is_arm64:
-        offset = 0x1DF14
-        original, patch = ARM64_PROLOGUE, ARM64_PATCH
-    else:
-        offset = X64_MATCHES_OFFSET
-        original, patch = X64_ORIGINAL, X64_PATCH
+    Parses the ELF section table directly, so no external tooling is required.
+    Raises ValueError when the match is absent or ambiguous.
+    """
+    if data[:6] != b'\x7fELF\x02\x01' or len(data) < 64:
+        raise ValueError('expected little-endian ELF64')
+    machine = struct.unpack_from('<H', data, 18)[0]
+    shoff = struct.unpack_from('<Q', data, 40)[0]
+    shentsize, shnum = struct.unpack_from('<HH', data, 58)
+    if shentsize != 64 or shoff + shnum * shentsize > len(data):
+        raise ValueError('invalid ELF section table')
 
+    sections = [struct.unpack_from('<IIQQQQIIQQ', data, shoff + i * shentsize)
+                for i in range(shnum)]
+
+    hits = set()
+    for section in sections:
+        # SHT_SYMTAB (2) and SHT_DYNSYM (11) carry symbol tables.
+        if section[1] not in (2, 11):
+            continue
+        _, _, _, _, offset, length, link, _, _, stride = section
+        if stride != 24 or link >= len(sections) or offset + length > len(data):
+            continue
+        strings = sections[link]
+        names = data[strings[4]:strings[4] + strings[5]]
+        for pos in range(offset, offset + length, stride):
+            name, info, _, index, address, size = struct.unpack_from('<IBBHQQ', data, pos)
+            # STT_FUNC == 2; section index 0 (SHN_UNDEF) is not a definition.
+            if info & 15 != 2 or index == 0 or index >= len(sections):
+                continue
+            if fragment not in names[name:].split(b'\0', 1)[0]:
+                continue
+            target = sections[index]
+            file_offset = target[4] + address - target[3]
+            if not (target[4] <= file_offset < target[4] + target[5]):
+                raise ValueError('symbol is not file content')
+            hits.add((file_offset, size))
+    if len(hits) != 1:
+        raise ValueError(f'expected exactly one Matches function, found {len(hits)}')
+    offset, size = hits.pop()
+    return machine, offset, size
+
+
+def patch(path):
+    data = bytearray(Path(path).read_bytes())
+    machine, offset, size = find_symbol(data, MATCHES_SYMBOL)
+    if machine not in LAYOUTS:
+        raise ValueError(f'unsupported ELF machine: {machine}')
+    original, replacement = LAYOUTS[machine]
+
+    if size < max(len(original), len(replacement)):
+        raise ValueError(f'Matches too small ({size} bytes) to hold the patch')
+
+    if data[offset:offset + len(replacement)] == replacement:
+        print(f'  · 指纹补丁已存在 @0x{offset:x}')
+        return
     if data[offset:offset + len(original)] != original:
-        # Prologue moved between addon builds: scan the whole file for the unique
-        # sequence and use the single occurrence closest to the historical offset.
-        hits = []
-        start = 0
-        while True:
-            i = data.find(original, start)
-            if i == -1:
-                break
-            hits.append(i)
-            start = i + 1
-        if not hits:
-            print(f'  ✗ 未找到 Matches 序言，无法打补丁: {path}')
-            return 1
-        offset = min(hits, key=lambda x: abs(x - offset))
-        print(f'  · 序言已移动，改用扫描结果 0x{offset:x}（候选 {len(hits)} 处）')
+        raise ValueError(f'unexpected prologue @0x{offset:x}: '
+                         f'{bytes(data[offset:offset + len(original)]).hex()}; refusing to patch')
 
-    before = bytes(data[offset:offset + len(patch)])
-    data[offset:offset + len(patch)] = patch
-    open(path, 'wb').write(bytes(data))
-    arch = 'arm64' if is_arm64 else 'x64'
-    print(f'  ✓ 指纹门禁已放宽 ({arch}) @0x{offset:x}: {before.hex()} -> {patch.hex()}')
-    return 0
+    data[offset:offset + len(replacement)] = replacement
+    Path(path).write_bytes(bytes(data))
+    print(f'  ✓ 指纹门禁已放宽 (machine={machine}) @0x{offset:x}')
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        patch(sys.argv[1])
+    except (ValueError, OSError, IndexError) as error:
+        sys.exit(f'指纹补丁失败: {error}')

@@ -30,6 +30,23 @@ def main() -> int:
         src = src.replace(old, new)
         done.append(label)
 
+    def sub_optional(old, new, label):
+        """Rewrite an anchor that exists in only some releases.
+
+        Paths move between versions (pnpm did in 0.2.1), so exactly one variant
+        matches. Absence is not an error; a match must still be applied.
+        """
+        nonlocal src
+        n = src.count(old)
+        if n == 0:
+            return False
+        if n > 1:
+            missing.append(f'{label} (found {n}, expected 1)')
+            return False
+        src = src.replace(old, new)
+        done.append(label)
+        return True
+
     # 1) platform allowlist ---------------------------------------------------
     sub(
         'if (!["win32", "darwin"].includes(process.platform)',
@@ -88,9 +105,6 @@ def main() -> int:
         ('join(process.resourcesPath, "runtime", "bin")',
          'join(desktopResourcesRoot(), "runtime", "bin")',
          'nodeBin 路径改走 resources 根'),
-        ('join(process.resourcesPath, "runtime", "pnpm", "bin", "pnpm.mjs")',
-         'join(desktopResourcesRoot(), "runtime", "pnpm", "bin", "pnpm.mjs")',
-         'pnpm 路径改走 resources 根'),
         ('join(process.resourcesPath, "runtime", "primary-runtime")',
          'join(desktopResourcesRoot(), "runtime", "primary-runtime")',
          'primaryRuntime 路径改走 resources 根'),
@@ -102,6 +116,20 @@ def main() -> int:
          'CLI 命令管理器 resources 改走 resources 根'),
     ):
         sub(old, new, label)
+
+    # pnpm moved in 0.2.1: it used to live at runtime/pnpm and is now nested
+    # under runtime/primary-runtime/dependencies/pnpm. Rewrite whichever layout
+    # this bundle ships; the other variant simply will not match.
+    if not sub_optional(
+        'join(process.resourcesPath, "runtime", "primary-runtime", "dependencies", "pnpm", "bin", "pnpm.mjs")',
+        'join(desktopResourcesRoot(), "runtime", "primary-runtime", "dependencies", "pnpm", "bin", "pnpm.mjs")',
+        'pnpm 路径改走 resources 根（0.2.1 布局）',
+    ):
+        sub_optional(
+            'join(process.resourcesPath, "runtime", "pnpm", "bin", "pnpm.mjs")',
+            'join(desktopResourcesRoot(), "runtime", "pnpm", "bin", "pnpm.mjs")',
+            'pnpm 路径改走 resources 根（0.2.0 布局）',
+        )
 
     # 5b) packaged-state users ----------------------------------------------
     occurrences = src.count('app.isPackaged')
