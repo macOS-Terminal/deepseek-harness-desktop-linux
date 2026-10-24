@@ -216,11 +216,15 @@ HOME=/tmp/t DSH_HOME=/tmp/t/.dsh xvfb-run -a ./out-x64/deepseek-harness --ozone-
 |---|---|
 | `DeepSeek-Harness-0.2.1-rc.2-{x86_64,aarch64}.AppImage` | 内置 Electron，免安装 |
 | `deepseek-harness_0.2.1-rc.2_{amd64,arm64}.bundled.deb` | 内置 Electron |
-| `deepseek-harness-desktop-0.2.1_rc.2-1-{x86_64,aarch64}.pkg.tar.zst` | Arch，内置 Electron |
+| `deepseek-harness-desktop-0.2.1_rc.2-1-{x86_64,aarch64}.pkg.tar.zst` | Arch，**依赖系统 `electron`**（不内置） |
 | `deepseek-harness-0.2.1-0.rc2.{x86_64,aarch64}.rpm` | Fedora/openSUSE，内置 Electron |
 
 > 只发布 `bundled.deb`。不再提供 `system.deb`：Debian/Ubuntu 没有官方 electron 包，
 > 该变体在目标系统上无法直接安装。
+>
+> `.pkg.tar.zst` 是**唯一依赖系统 Electron** 的格式（Arch 的 `electron` 元包可靠），
+> 其余三种（AppImage / deb / rpm）都内置 Electron。实测确认：deb 与 rpm 内含
+> `usr/lib/deepseek-harness/deepseek-harness` 二进制，pkg.tar.zst 不含。
 
 ### 压缩设置
 

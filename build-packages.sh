@@ -136,28 +136,22 @@ LAUNCH
 chmod 755 "$META/launcher"
 
 # -------------------------------------------------------------------- deb ----
+# Only the bundled build is shipped. A system-Electron variant would need a
+# distribution electron package, and Debian/Ubuntu ship none, so it could not
+# be installed there without a third-party source. Keeping the function
+# single-purpose also removes the optional-field handling that used to emit a
+# blank line into the control file (issue #1).
 build_deb() {
-  local variant="$1"
-  local d="$WORK/deb-$variant"
-  local deps="" rec=""
+  local d="$WORK/deb"
+  local deps=""
   rm -rf "$d"; mkdir -p "$d/control" "$d/data"
   local D="$d/data"
   mkdir -p "$D/usr/lib/deepseek-harness" "$D/usr/bin" "$D/usr/share/applications" "$D/usr/share/icons/hicolor"
-  if [ "$variant" = bundled ]; then
-    cp -a "$SRC/." "$D/usr/lib/deepseek-harness/"
-    normalize_modes "$D/usr/lib/deepseek-harness"
-    trim_tree "$D/usr/lib/deepseek-harness"
-    printf '#!/bin/sh\nexec /usr/lib/deepseek-harness/deepseek-harness "$@"\n' > "$D/usr/bin/deepseek-harness"
-    deps="libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0, libgbm1, libasound2, libdrm2, libxkbcommon0, libxcomposite1, libxdamage1, libxfixes3, libxrandr2, libcups2, libx11-xcb1, libxcb-dri3-0"
-  else
-    cp -a "$SRC/resources" "$D/usr/lib/deepseek-harness/resources"
-    normalize_modes "$D/usr/lib/deepseek-harness"
-    rm -f "$D/usr/lib/deepseek-harness/resources/app-update.yml"
-    cp "$META/launcher" "$D/usr/bin/deepseek-harness"
-    deps="libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0, libgbm1, libasound2, libdrm2, libxkbcommon0, libxcomposite1, libxdamage1, libxfixes3, libxrandr2, libcups2, libx11-xcb1, libxcb-dri3-0"
-    # Debian/Ubuntu ship no electron package: a hard dependency would fail apt.
-    rec="electron | electron44 | electron43 | electron42 | electron41 | nodejs-electron"
-  fi
+  cp -a "$SRC/." "$D/usr/lib/deepseek-harness/"
+  normalize_modes "$D/usr/lib/deepseek-harness"
+  trim_tree "$D/usr/lib/deepseek-harness"
+  printf '#!/bin/sh\nexec /usr/lib/deepseek-harness/deepseek-harness "$@"\n' > "$D/usr/bin/deepseek-harness"
+  deps="libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0, libgbm1, libasound2, libdrm2, libxkbcommon0, libxcomposite1, libxdamage1, libxfixes3, libxrandr2, libcups2, libx11-xcb1, libxcb-dri3-0"
   chmod 755 "$D/usr/bin/deepseek-harness"
   cp "$B/icons/deepseek-harness.desktop" "$D/usr/share/applications/"
   for s in 16 24 32 48 64 128 256 512; do
@@ -165,15 +159,6 @@ build_deb() {
     cp "$META/icons/${s}x${s}/deepseek-harness.png" "$D/usr/share/icons/hicolor/${s}x${s}/apps/"
   done
   local size; size=$(du -sk "$D" | cut -f1)
-  # Optional fields must be omitted entirely, never emitted as an empty line:
-  # a blank line ends the paragraph, so everything after it (Homepage,
-  # Description) would be parsed as a second, malformed package stanza and
-  # dpkg/apt would refuse to install the archive.
-  local recommends_line=""
-  if [ -n "$rec" ]; then
-    recommends_line="Recommends: $rec
-"
-  fi
   cat > "$d/control/control" <<EOF
 Package: deepseek-harness
 Version: $VER
@@ -183,10 +168,10 @@ Architecture: $DEBARCH
 Maintainer: DeepSeek Harness Linux port <noreply@localhost>
 Installed-Size: $size
 Depends: $deps
-${recommends_line}Homepage: https://harness.deepseek.com
-Description: DeepSeek Harness desktop client ($variant Electron build)
+Homepage: https://harness.deepseek.com
+Description: DeepSeek Harness desktop client
  DeepSeek Harness desktop application repackaged for Linux.
- This build $([ "$variant" = bundled ] && echo "bundles its own Electron 44.4.5 runtime" || echo "uses the distribution-provided Electron runtime").
+ This build bundles its own Electron runtime.
 EOF
   cat > "$d/control/postinst" <<'P'
 #!/bin/sh
@@ -208,14 +193,15 @@ exit 0
 P
   chmod 755 "$d/control/postinst" "$d/control/postrm"
   echo "2.0" > "$d/debian-binary"
-  # zstd 压缩的 deb（dpkg >= 1.21.18）。--long=27 对大载荷更有利。
+  # zstd 压缩的 deb。Ubuntu 21.04+（dpkg 1.20.9ubuntu1+）与 Debian 12+ 支持；
+  # Debian 11 及更早不支持。详见 docs/ARTIFACTS.md 的「系统要求」。
   ( cd "$d" && tar --owner=0 --group=0 --numeric-owner -c -C data . \
       | zstd $ZSTD_OPTS -q -o data.tar.zst \
     && tar --owner=0 --group=0 --numeric-owner -c -C control . \
       | zstd $ZSTD_OPTS -q -o control.tar.zst \
-    && ar rc "$OUT/deepseek-harness_${VER}_${DEBARCH}.${variant}.deb" \
+    && ar rc "$OUT/deepseek-harness_${VER}_${DEBARCH}.bundled.deb" \
          debian-binary control.tar.zst data.tar.zst )
-  echo "  ✓ deb ($variant): $(du -h "$OUT/deepseek-harness_${VER}_${DEBARCH}.${variant}.deb" | cut -f1)"
+  echo "  ✓ deb: $(du -h "$OUT/deepseek-harness_${VER}_${DEBARCH}.bundled.deb" | cut -f1)"
   rm -rf "$d"; sync
 }
 
@@ -383,7 +369,7 @@ say "构建 $ARCH 全部格式 (工作区: $WORK)"
 # distribution Electron package, and Debian/Ubuntu ship none, so it could not be
 # installed there without a third-party source. The bundled build is
 # self-contained and is what the release notes point users at.
-build_deb bundled
+build_deb
 build_pkgtar
 build_rpm
 build_appimage
