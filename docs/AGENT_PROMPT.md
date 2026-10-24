@@ -2,6 +2,10 @@
 
 你从未接触过这个项目。以下是你需要的全部信息。**先读完再动手。**
 
+**你手上已具备**：官方 macOS dmg（`0.2.1-rc.2`，已下载好）、可联网的 Linux 环境、
+本补丁仓库的地址。**你需要做**：拉仓库 → 解包 dmg → 换平台包 → 打补丁 → 构建 →
+逐包验证。
+
 ---
 
 ## 0. 背景（一句话）
@@ -23,6 +27,9 @@ DeepSeek 官方只发布 macOS / Windows 版桌面客户端。本项目的目标
 | 3 | 构建 **aarch64** 产物 | 同上 4 种格式 |
 | 4 | 验证每个包 | 每个包解包后能实际启动，看到 `dsh web: http://127.0.0.1:19387/` |
 | 5 | 校验和 | 生成 `SHA256SUMS.txt` 并 `sha256sum -c` 全部通过 |
+
+**官方 macOS dmg 已为你准备好**（上游版本 `0.2.1-rc.2`），无需下载。
+你只需把它解包，然后按第 4 节流程构建。
 
 **注意**：只需构建 `bundled.deb`（内置 Electron）。**不要**构建 `system.deb`——
 构建脚本已改为只出 bundled 变体，请勿改回去。
@@ -61,9 +68,14 @@ README.md                         英文概览
 
 仓库**不含**任何官方二进制载荷（体积与授权原因）。需要准备：
 
-### 3.1 官方 macOS dmg
-放到 `others/dsh-latest-macos-arm64.dmg`。
-解包：`7z x -oothers/dmg others/dsh-latest-macos-arm64.dmg`
+### 3.1 解包已就位的官方 dmg
+dmg 已放在 `others/`（文件名形如 `dsh-latest-macos-arm64.dmg`）。解包：
+```bash
+7z x -oothers/dmg others/dsh-latest-macos-arm64.dmg
+```
+解出的目录名会带版本号，例如 `DeepSeek Harness 0.2.1-rc.2-arm64`。
+> 若解出的版本与本文档写的 `0.2.1-rc.2` 不同，请以实际为准，
+> 并核对第 3.2/3.4 节的 Electron 与 npm 包版本号是否需同步调整。
 
 ### 3.2 Electron **44.7.0**
 ```
@@ -123,7 +135,22 @@ asar 格式：文件头 16 字节，`[12:16]` 是 JSON 头长度，
 （仓库的 `README.zh.md` 有说明；也可参考 `scripts/extract-asar.py` 的思路。）
 
 ### 4.3 替换原生模块 + 装配运行时
-- 删除所有 `*-darwin-*` / `*-win32-*` 原生包，换成对应 `*-linux-*`
+
+**平台替换用仓库里的脚本**（已实测两架构）：
+```bash
+# 从 npm 取好对应架构的 Linux 包放进 dl/linux-x64 或 dl/linux-arm64（见 3.4 节），然后：
+./swap-native-linux.sh <app-tree> dl/linux-x64  x64
+./swap-native-linux.sh <app-tree> dl/linux-arm64 arm64
+```
+`<app-tree>` 指含 `dsh/node_modules` 的那一层（即 `.../Resources/app.asar.unpacked/dsh`）。
+脚本会：删 darwin 包 → 装 Linux 包 → 清理 `*:com.apple.provenance` →
+对全部 `.node`/`.so` 做架构核验（不符即非零退出）。
+
+> **为什么必须替换而不是只删**：应用按平台 `require.resolve` 解析原生模块。
+> darwin 包在 Linux 上永不加载，但**对应的 Linux 包必须存在**，否则 require 失败、
+> Host 启动中止。只删不装会得到一个能解包但跑不起来的树。
+
+其余装配要点：
 - `resources/runtime/` 放 `bin/node`、`cli/`、`office-skills/`、`versions.json`
 - `resources/runtime/primary-runtime/dependencies/` 放 `node/`、`python/`、`pnpm/`
   > ⚠️ **0.2.1 起 pnpm 位于 `dependencies/pnpm/`**（0.2.0 时在 `runtime/pnpm/`）。
