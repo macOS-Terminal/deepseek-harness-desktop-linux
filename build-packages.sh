@@ -14,6 +14,18 @@ ARCH="${1:?用法: build-packages.sh <x64|arm64>}"
 VER="0.2.1-rc.2"                     # upstream version (macOS dmg 0.2.1-rc.2)
 VER_PKG="0.2.1_rc.2"
 
+# 统一的压缩设置：四种格式（deb / rpm / pkg.tar / AppImage）全部使用 zstd。
+# 选择 zstd 的理由：体积接近 xz -9e，但解压快 3-5 倍，安装体验明显更好。
+# 注意：zstd 压缩的 deb 需要 dpkg >= 1.21.18（Debian 12+ / Ubuntu 24.04+）。
+ZSTD_LEVEL=19                 # 与 xz -9e 体积接近；-22 收益不足 2% 但慢一倍
+ZSTD_OPTS="-19 -T0 --long=27" # --long 提升大载荷压缩率
+
+# rpm 的 Version/Release 需与上游一致：0.2.1-rc.2 -> Version 0.2.1 / Release 0.rc2
+RPM_VERSION="${VER%%-*}"          # 0.2.1
+RPM_RELEASE_RAW="${VER#*-}"       # rc.2
+RPM_RELEASE="0.${RPM_RELEASE_RAW//./}"  # 0.rc2（rpm 不接受 rc.2 里的点）
+RPMVER="${RPM_VERSION}-${RPM_RELEASE}.${RPMARCH}"
+
 case "$ARCH" in
   x64)   TREE=out-x64;   DEBARCH=amd64;   PKGARCH=x86_64;  RPMARCH=x86_64;  AIARCH=x86_64 ;;
   arm64) TREE=out-arm64; DEBARCH=arm64;   PKGARCH=aarch64; RPMARCH=aarch64; AIARCH=aarch64 ;;
@@ -196,9 +208,13 @@ exit 0
 P
   chmod 755 "$d/control/postinst" "$d/control/postrm"
   echo "2.0" > "$d/debian-binary"
-  ( cd "$d" && tar --owner=0 --group=0 --numeric-owner -cJf data.tar.xz -C data . \
-    && tar --owner=0 --group=0 --numeric-owner -cJf control.tar.xz -C control . \
-    && ar rc "$OUT/deepseek-harness_${VER}_${DEBARCH}.${variant}.deb" debian-binary control.tar.xz data.tar.xz )
+  # zstd 压缩的 deb（dpkg >= 1.21.18）。--long=27 对大载荷更有利。
+  ( cd "$d" && tar --owner=0 --group=0 --numeric-owner -c -C data . \
+      | zstd $ZSTD_OPTS -q -o data.tar.zst \
+    && tar --owner=0 --group=0 --numeric-owner -c -C control . \
+      | zstd $ZSTD_OPTS -q -o control.tar.zst \
+    && ar rc "$OUT/deepseek-harness_${VER}_${DEBARCH}.${variant}.deb" \
+         debian-binary control.tar.zst data.tar.zst )
   echo "  ✓ deb ($variant): $(du -h "$OUT/deepseek-harness_${VER}_${DEBARCH}.${variant}.deb" | cut -f1)"
   rm -rf "$d"; sync
 }
@@ -214,8 +230,8 @@ build_rpm() {
   cp -a "$META/icons" "$top/SOURCES/icons"
   cat > "$top/SPECS/deepseek-harness.spec" <<SPEC
 Name:           deepseek-harness
-Version:        0.2.0
-Release:        0.rc2%{?dist}
+Version:        ${RPM_VERSION}
+Release:        ${RPM_RELEASE}%{?dist}
 Summary:        DeepSeek Harness desktop client
 License:        MIT
 URL:            https://harness.deepseek.com
@@ -273,11 +289,11 @@ EOF
     rc=(--rcfile /usr/lib/rpm/rpmrc --rcfile "$localrc")
   fi
   TMPDIR="$top/tmp" rpmbuild "${rc[@]}" --define "_topdir $top" --define "_tmppath $top/tmp" \
-    --define "_binary_payload w6.xzdio" --target "${RPMARCH}-linux" -bb "$top/SPECS/deepseek-harness.spec" \
+    --define "_binary_payload w19.zstdio" --target "${RPMARCH}-linux" -bb "$top/SPECS/deepseek-harness.spec" \
     >"$WORK/rpm.log" 2>&1 || { tail -20 "$WORK/rpm.log"; return 1; }
   local built; built=$(find "$top/RPMS" -name '*.rpm' | head -1)
-  cp "$built" "$OUT/deepseek-harness-0.2.0-0.rc2.${RPMARCH}.rpm"
-  echo "  ✓ rpm: $(du -h "$OUT/deepseek-harness-0.2.0-0.rc2.${RPMARCH}.rpm" | cut -f1)"
+  cp "$built" "$OUT/deepseek-harness-${RPMVER}.${RPMARCH}.rpm"
+  echo "  ✓ rpm: $(du -h "$OUT/deepseek-harness-${RPMVER}.${RPMARCH}.rpm" | cut -f1)"
   rm -rf "$top"; sync
 }
 
@@ -330,7 +346,7 @@ EOF
     && gzip -9 -f .MTREE )
   local name="deepseek-harness-desktop-${VER_PKG}-1-${PKGARCH}.pkg.tar.zst"
   ( cd "$r" && tar --owner=0 --group=0 --numeric-owner --sort=name -cf - .PKGINFO .INSTALL .MTREE.gz usr ) \
-    | zstd -19 -T4 -o "$OUT/$name" -q -f
+    | zstd $ZSTD_OPTS -q -o "$OUT/$name" -f
   echo "  ✓ pkg.tar.zst: $(du -h "$OUT/$name" | cut -f1)"
   rm -rf "$r"; sync
 }
@@ -353,11 +369,12 @@ build_appimage() {
   done
   printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/deepseek-harness" "$@"\n' > "$A/AppRun"
   chmod 755 "$A/AppRun"
+  # squashfs 的 zstd 用 1M 块 + level 19；-Xdict-size 提高跨块去重效果。
   "$B/tools/usr/bin/mksquashfs" "$A" "$WORK/app.squashfs" -root-owned -noappend \
-    -comp zstd -Xcompression-level 19 -b 1M -processors 4 >/dev/null 2>&1
-  cat "$B/tools/runtime-$AIARCH" "$WORK/app.squashfs" > "$OUT/DeepSeek-Harness-0.2.0-rc.2-${AIARCH}.AppImage"
-  chmod 755 "$OUT/DeepSeek-Harness-0.2.0-rc.2-${AIARCH}.AppImage"
-  echo "  ✓ AppImage: $(du -h "$OUT/DeepSeek-Harness-0.2.0-rc.2-${AIARCH}.AppImage" | cut -f1)"
+    -comp zstd -Xcompression-level "$ZSTD_LEVEL" -Xdict-size 100% -b 1M -processors 0 >/dev/null 2>&1
+  cat "$B/tools/runtime-$AIARCH" "$WORK/app.squashfs" > "$OUT/DeepSeek-Harness-${VER}-${AIARCH}.AppImage"
+  chmod 755 "$OUT/DeepSeek-Harness-${VER}-${AIARCH}.AppImage"
+  echo "  ✓ AppImage: $(du -h "$OUT/DeepSeek-Harness-${VER}-${AIARCH}.AppImage" | cut -f1)"
   rm -rf "$A" "$WORK/app.squashfs"; sync
 }
 
