@@ -5,6 +5,116 @@
 
 ---
 
+## [3.0.0] — 2026-10-24 — 适配 `0.2.1-rc.2`
+
+上游从 `0.2.0-rc.2` 升级到 **0.2.1-rc.2**。产出 x86_64 与 aarch64 各 4 种格式，共 8 个产物
+（不再提供 `system.deb`）。
+
+### 压缩：四种格式统一改为 zstd
+
+| 格式 | 之前 | 现在 |
+|---|---|---|
+| `.deb` | `data.tar.xz`（xz 默认 -6） | `data.tar.zst`（zstd -19 --long=27） |
+| `.rpm` | `_binary_payload w6.xzdio` | `_binary_payload w19.zstdio` |
+| `.pkg.tar.zst` | `zstd -19 -T4` | `zstd -19 -T0 --long=27` |
+| `.AppImage` | squashfs zstd L19、`-b 1M` | 增加 `-Xdict-size 100%`、`processors 0` |
+
+> rpm 原先强制 `w6.xzdio`，**低于** rpm 6 的默认 `w19.zstdio`，属于性能倒退，已修正。
+
+压缩参数抽成 `build-packages.sh` 顶部常量 `ZSTD_LEVEL` / `ZSTD_OPTS`，四处引用同一来源。
+
+#### 最低系统要求（已逐条查证）
+
+| 格式 | 要求 | 不支持 |
+|---|---|---|
+| deb | Ubuntu **21.04+**（dpkg 1.20.9ubuntu1+）；Debian **12+**（dpkg 1.21.18+） | **Debian 11 及更早**、Ubuntu 20.04 及更早 |
+| rpm | `rpm >= 4.14`（Fedora 31+ / openSUSE Leap 15.3+） | 更早版本报 `Unsupported payload compressor` |
+| pkg.tar.zst | pacman 5.x+ | — |
+| AppImage | squashfs-tools 4.4+ | — |
+
+> **Ubuntu 与 Debian 的 zstd 支持不同步，不能按 dpkg 版本号统一判断。**
+> - 上游 Debian 在 **1.21.18** 引入：`libdpkg: Add zstd support for .deb archives.
+>   Closes: #892664`
+> - Ubuntu **21.04（hirsute）** 就已通过自己的 patch 引入：
+>   `dpkg 1.20.9ubuntu1` 的 `Add Zstd compression and decompression support for
+>   binary packages`；并在 `1.21.1ubuntu1`（jammy）把默认压缩从 xz 改为 zstd
+>   （LP: #1923845）
+>
+> 因此 Ubuntu 22.04（dpkg 1.21.1ubuntu2）**可以**安装 zstd 压缩的 deb，
+> 而 Debian 11（dpkg 1.20.13）**不能**。
+
+### 修正：三处版本号硬编码
+
+| 位置 | 之前 | 影响 |
+|---|---|---|
+| rpm 文件名 | `deepseek-harness-0.2.0-0.rc2.*.rpm` | 产物名字与实际版本不符 |
+| AppImage 文件名 | `DeepSeek-Harness-0.2.0-rc.2-*.AppImage` | 同上 |
+| rpm spec | `Version: 0.2.0` / `Release: 0.rc2` | **rpm 把自己标成 0.2.0**，与 0.2.1-rc.2 不符 |
+
+现在统一由 `VER` 派生：`RPM_VERSION=0.2.1`、`RPM_RELEASE=0.rc2`、`RPMVER=0.2.1-0.rc2.<arch>`。
+
+### 修正：`patch-fingerprint.py` 改为按 ELF 符号定位
+
+旧实现用硬编码偏移，偏移不匹配时回退到「序言扫描 + 取最近候选」。
+在 0.2.1 的新 addon（`node-addon-require-builtin` 0.1.9）上，该扫描命中 **233 个无关函数**，
+最终把 `0x1e174` 当成 `Matches`（真实位于 `0x1e1e4`），**静默损坏二进制却报告成功**。
+
+现解析 ELF 符号表定位 `MatchesERKNS2_19ElectronProfileSpecE`，
+找不到唯一符号即**拒绝打补丁**。已实测 x64/arm64 双架构、幂等性、以及对非目标文件的拒绝行为。
+
+### 修正：`patch-main.py` 适配 0.2.1 的 pnpm 布局
+
+pnpm 从 `runtime/pnpm/` 移至 `runtime/primary-runtime/dependencies/pnpm/`。
+新增 `sub_optional()` 容忍跨版本的二选一锚点（两种布局各匹配其一，缺另一个不算错误）。
+0.2.0 与 0.2.1 两版应用树均已实测通过。
+
+### 新增：裁剪运行时冗余（`trim-app-tree.sh`）
+
+在四种打包路径复制应用树后统一调用，减少解包后占用实测 **94.9 MB**（1167.1 → 1072.3 MB）。
+
+裁剪项及依据：
+
+| 项 | 依据 |
+|---|---|
+| `node/lib/node_modules/npm` + `corepack` | 应用只调用 pnpm，`main.js` 中 0 处引用 npm |
+| `node/share` | man 手册 + gdb/lldb 脚本，运行期不读取 |
+| `node/include/node/openssl/archs` | 21 个平台变体中只保留本架构 |
+| python `idlelib`/`tkinter`/`turtledemo` | GUI 组件，桌面应用不启动 |
+| python `ensurepip`/`pip`/`site-packages/pip` | 运行期不安装 Python 包（站点包已预置） |
+| python `lib2to3`/`pydoc_data` | 已废弃 / 文档数据 |
+| `dsh-sandbox-windows-acl` | Windows 专用 |
+| `LICENSES.chromium.html` | 合规文件，非运行时资源 |
+
+**刻意未裁剪**：
+- `node/include/node` 的核心头文件 —— pnpm 内置 `node-gyp`，用户安装带原生扩展的插件时
+  需要它们；删掉会破坏该功能，而只省约 3 MB。
+- `pnpm/dist` —— 运行期插件安装的实际实现。
+
+> **关于压缩后收益的诚实说明**：上述内容多为文本/头文件，xz 压缩率约 17:1
+> （实测 100.4 MB → 6.0 MB）。在 257 MB 的成品 deb 中，下载体积仅减少约 0.2 MB。
+> 成品体积主要由 Electron(62MB) / app 依赖(66MB) / python(53MB) / node(28MB) 决定，
+> 均为功能必需。**本改动的实际价值是减少解包后磁盘占用，而非显著缩小下载包。**
+
+安全性验证：
+- 裁剪后 Python 科学栈正常（numpy 2.3.5 / pandas / PIL / lxml / docx / pptx / openpyxl 均可导入）
+- node v24.21.0 正常；pnpm 11.28.5 正常，且 `pnpm add is-odd` 实际安装成功
+- 应用启动对照实验：裁剪树与未裁剪树日志完全一致（均为缺登录凭据导致的
+  `connection (required) missing credentials`），证明裁剪未引入退化
+- 脚本幂等
+
+### 新增：`swap-native-linux.sh`（双架构平台替换）
+
+把 darwin 原生包替换为对应的 Linux 包（x64 / arm64）。应用按平台 `require.resolve`，
+darwin 包永不加载，但**对应 Linux 包必须存在**，否则 require 失败、Host 启动中止。
+脚本同时清理 `*:com.apple.provenance`，并对全部 `.node`/`.so` 做架构核验（不符即非零退出）。
+
+### 新增：`docs/AGENT_PROMPT.md`
+
+交给新 Agent 的完整构建 + 验证提示词，覆盖前置依赖版本表、补丁顺序与原因、
+压缩要求、兼容性声明、已知坑、验证清单与汇报格式。
+
+---
+
 ## [2.0.0] — 2026-10-01 — 适配 `0.2.0-rc.2`
 
 上游从 `0.1.7-rc.1` 升级到 **0.2.0-rc.2**。本次以官方 **macOS arm64** dmg 为唯一载荷来源

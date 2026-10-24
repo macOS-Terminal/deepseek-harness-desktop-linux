@@ -1,131 +1,334 @@
-# deepseek-harness-desktop-linux
+# DeepSeek Harness — Linux 移植源码包
 
-把 **DeepSeek Harness 桌面端**（官方仅发布 macOS / Windows 包）移植到 Linux 的
-**重新打包工具链**：官方 dmg 载荷 + 若干公开下载物 → AppImage / deb / pacman / rpm。
+把官方 **macOS arm64** 安装包（`DeepSeek Harness 0.2.1-rc.2.dmg`）里的应用载荷，
+重新打包成 Linux 桌面发行包（AppImage / deb / pacman / rpm，x86_64 + aarch64），
+全部格式统一使用 **zstd** 压缩。
 
-覆盖 **x86_64** 与 **aarch64**，共 10 个发行包。
-
-上游应用版本：`@deepseek-ai/dsh-desktop 0.2.0-rc.2`
-
-> 本仓库只包含**移植补丁与打包脚本**，不含任何官方二进制载荷（体积与授权原因）。
-> 详细的中文使用教程见 **[README.zh.md](README.zh.md)**。
-
----
-
-## 这个移植在解决什么
-
-官方代码里 Linux 分支基本是空实现，因此移植 = **补齐那些空分支**。逐项：
-
-| # | 问题 | 处理 |
-|---|---|---|
-| 1 | `main.js` 平台白名单只有 `win32` / `darwin`，Linux 启动即 `unsupported platform` | 加入 `linux`，并上报 `x-client-platform: desktop-linux` |
-| 2 | 原生模块只带 macOS / Windows 预编译产物 | 换成 `@img/sharp-linux-*`、`@koromix/koffi-linux-*`、`node-pty` prebuilds 等 9 类 |
-| 3 | 运行时载荷是 macOS 构建 | 换 Linux 版 Node 24.21.0 + Python 3.12.14（13 个科学计算包）+ pnpm |
-| 4 | 原实现依赖 `process.resourcesPath`，系统 Electron 下指错目录 | `DSH_DESKTOP_RESOURCES_DIR` 覆盖 |
-| 5 | 系统 Electron 下 `app.isPackaged` 为 false，被误判为开发模式 | `DSH_DESKTOP_FORCE_PACKAGED=1` |
-| 6 | 原生插件只认 Electron 43.0.0 / 44.0.0 / 45.0.0-alpha.6 的 V8 指纹 | 二进制放宽匹配（**不降级 Electron**） |
-| 7 | **libvips 在 Electron 内段错误，JS 无法捕获，整个应用崩溃** | 进程隔离：Sharp 调用转发到独立 Node worker |
-| 8 | Linux 无窗口装饰规则，且托盘代码被 `win32` 门禁挡住 | 复用应用自身的 `data-windows-titlebar` 模式 + 复刻其 darwin 材质配方 |
+本目录是**可复现的移植工具链**：官方 dmg + 若干公开下载物 → 8 个 Linux 安装包（AppImage / bundled.deb / pkg.tar.zst / rpm × 两架构）。
 
 ---
 
 ## 目录结构
 
 ```
-├── patches/
-│   ├── patch-main.py            平台准入 / resources 根 / 打包态 / 托盘 / 窗口控制 IPC
-│   ├── patch-mac-chrome.py      macOS 风格装饰：左置交通灯 + 侧栏毛玻璃
-│   ├── patch-fingerprint.py     放宽 V8 指纹白名单（x64 0x17cdd、arm64 0x1df14）
-│   ├── patch-titlebar.py        早期隐藏标题栏方案（已被 patch-mac-chrome 取代）
-│   └── upgrade-mac-chrome.py    对已打过旧版 chrome 的树做增量修复（幂等）
-├── image-worker-src/
-│   ├── client.cjs               Sharp API 兼容层（Electron 内，只记录并转发）
+dsh-desktop-linux-source/
+├── patches/                     逆向/适配补丁（按顺序执行）
+│   ├── patch-main.py            平台准入、resources 根、打包态判定、托盘、窗口控制 IPC
+│   ├── patch-titlebar.py        隐藏原生标题栏（历史版本，被 patch-mac-chrome 取代）
+│   ├── patch-fingerprint.py     放宽 node-addon-require-builtin 的 V8 指纹白名单
+│   ├── patch-mac-chrome.py      macOS 风格窗口装饰（左置交通灯 + 侧栏毛玻璃）
+│   └── upgrade-mac-chrome.py    对已打过旧版 chrome 的树做增量升级（幂等补充）
+├── image-worker-src/            Sharp/libvips 进程隔离方案
+│   ├── client.cjs               Sharp API 兼容层（跑在 Electron 内，只转发）
 │   ├── worker.cjs               真正执行 libvips 的独立 Node 进程
-│   └── verify-image-worker.cjs  隔离效果自检
-├── icons/                       桌面项 + 16→512 全套 hicolor 图标
-├── build-packages.sh            打全部格式（deb×2 / pkg.tar.zst / rpm / AppImage）
-├── install-image-worker.sh      把 Sharp 替身包装入某棵应用树
+│   └── verify-image-worker.cjs  隔离效果自检脚本
+├── icons/                       桌面项与 16→512 全套 hicolor 图标
+├── build-packages.sh            打全部格式（deb×2 / pkg / rpm / AppImage）
+├── install-image-worker.sh      把 Sharp 替身包装入某个应用树
 ├── verify-launch-x64.sh         五种格式逐个解包并实测启动
-└── docs/
-    ├── ARTIFACTS.md             产物说明：安装方式、依赖策略、验证记录
-    ├── CHANGELOG.md             完整变更日志（含每个修复的根因与实测数据）
-    └── SHA256SUMS.txt           本次构建 10 个产物的校验和
+├── docs/
+│   ├── ARTIFACTS.md             产物说明：安装方式、依赖策略、验证记录
+│   ├── CHANGELOG.md             完整变更日志（含各修复的根因）
+│   └── SHA256SUMS.txt           本次构建 10 个产物的校验和
+└── README.md                    本文件
 ```
 
 ---
 
-## 快速开始
+## 一、准备：需要自行获取的东西
+
+源码包**不含**任何二进制载荷（体积与授权原因），需按下表准备。
+
+### 1. 官方安装包
+
+从 DeepSeek 官方下载 macOS 版 dmg，放到 `others/`：
+
+```
+dsh-desktop-linux/
+└── others/
+    └── dsh-latest-macos-arm64.dmg
+```
+
+> 只提供 macOS 包也能做出 Linux 版：应用层 JS 与架构无关，
+> 平台相关的只是原生模块（脚本会替换）。
+
+### 2. Electron 运行时（内置版用）
+
+到 npmmirror 或 GitHub Releases 取 **Electron 44.4.5**：
+
+```
+dl/electron-44.4.5-linux-x64.zip
+dl/electron-44.4.5-linux-arm64.zip
+```
+
+> 必须 ≥ 44.4.5：Electron 44.0.0 有 Linux 托盘回归缺陷。
+> 若用发行版自带的 Electron，则只需系统已安装（见下文「system 变体」）。
+
+### 3. Node 与 Python 运行时载荷
+
+```
+dl/node-v24.21.0-linux-x64.tar.xz      dl/node-v24.21.0-linux-arm64.tar.xz
+dl/python-3.12.14-x64.tar.gz           dl/python-3.12.14-arm64.tar.gz
+```
+
+Python 必须是 **python-build-standalone 的 `install_only_stripped`** 变体。
+⚠️ 不要用普通版再手工 `strip`：其段布局非标准，`strip`/`objcopy` 会破坏版本符号，
+导致运行期 `symbol lookup error`。
+
+### 4. Linux 原生模块（各架构一套）
+
+从 npm registry 取对应平台的 tgz：
+
+| 包 | 用途 |
+|---|---|
+| `@img/sharp-linux-{x64,arm64}` + `@img/sharp-libvips-linux-*` | 图片处理 |
+| `@koromix/koffi-linux-*` | FFI |
+| `sherpa-onnx-linux-*` | 语音识别 |
+| `node-addon-require-builtin-linux-*-gnu` | 内建模块桥接 |
+| `@vscode/ripgrep-linux-*` | 搜索 |
+| `@deepseek-ai/node-addon-system-linux-*` | landlock 沙箱 |
+| `@reflink/reflink-linux-*-gnu` | 写时复制 |
+| `node-pty`（取其中 `prebuilds/linux-*`） | 终端 |
+| `@deepseek-ai/libreoffice-kit-wasm@0.1.0` | Office 引擎（Linux 走 WASM 回退） |
+
+### 5. 打包工具
+
+- `mksquashfs`（squashfs-tools，AppImage 用）
+- AppImage type2 runtime：`runtime-x86_64`、`runtime-aarch64`
+- `rpmbuild`、`bsdtar`、`fakeroot`、`ar`、`zstd`、`xz`
+
+放到 `tools/`：
+
+```
+tools/usr/bin/mksquashfs
+tools/runtime-x86_64
+tools/runtime-aarch64
+```
+
+---
+
+## 二、生成应用树
+
+以下命令都在项目根目录（含 `dl/`、`others/`、`tools/` 的那一层）执行。
+
+### 1. 解出 dmg 里的应用载荷
 
 ```bash
-# 1) 按 README.zh.md 准备依赖（官方 dmg、Electron、Node/Python、原生模块、打包工具）
-# 2) 生成应用树
-python3 patches/patch-main.py        out-x64/resources/app
-python3 patches/patch-mac-chrome.py  out-x64/resources/app
-python3 patches/patch-fingerprint.py out-x64/resources/app/dsh/node_modules/node-addon-require-builtin-linux-x64-gnu/prebuilt/linux-x64-gnu-napi-v9.node
+mkdir -p app-new
+7z x -oothers/dmg others/dsh-latest-macos-arm64.dmg
+# 用随包提供的 asar 提取逻辑展开 app.asar（见下方说明）
+```
+
+`app.asar` 是 Electron 归档：文件头 16 字节中，`[12:16]` 是 JSON 头长度，
+`data_start = 8 + uint32([4:8])`，各文件按 `offset/size` 切片；
+`unpacked: true` 的条目要从 `app.asar.unpacked/` 取。
+
+### 2. 铺 Electron 骨架（每架构一次）
+
+```bash
+cd out-x64
+unzip -oq ../dl/electron-44.4.5-linux-x64.zip
+mv electron deepseek-harness
+rm -f resources/default_app.asar
+```
+
+### 3. 替换原生模块 + 装配运行时载荷
+
+把 `app-new` 复制到 `resources/app`，然后：
+
+- 删除所有 `*-darwin-*` / `*-win32-*` 原生包，换成对应的 `*-linux-*`；
+- `resources/runtime/` 下放置 `bin/node`、`pnpm/`、`cli/`、`office-skills/`；
+- `resources/runtime/primary-runtime/dependencies/{node,python}` 放入运行时载荷；
+- Python 站点包用交叉安装：
+
+```bash
+pip install --target <site-packages> \
+  --platform manylinux_2_28_x86_64 --platform manylinux_2_27_x86_64 \
+  --python-version 3.12 --implementation cp --only-binary=:all: \
+  numpy==2.3.5 pandas==3.0.1 Pillow==12.3.0 lxml==6.1.3 \
+  python-docx==1.2.0 python-pptx==1.0.2 openpyxl==3.1.5 XlsxWriter==3.2.9 \
+  python-dateutil==2.9.0.post0 six==1.17.0 tzdata==2025.2 \
+  typing_extensions==4.16.0 et_xmlfile==2.0.0
+```
+
+- 修正 `runtime/primary-runtime/runtime.json` 里的 `platform`/`arch`。
+
+### 4. 打补丁
+
+```bash
+python3 patches/patch-main.py       out-x64/resources/app
+python3 patches/patch-mac-chrome.py out-x64/resources/app
+python3 patches/patch-fingerprint.py \
+  out-x64/resources/app/dsh/node_modules/node-addon-require-builtin-linux-x64-gnu/prebuilt/linux-x64-gnu-napi-v9.node
+```
+
+逐项说明：
+
+| 补丁 | 作用 | 不改会怎样 |
+|---|---|---|
+| `patch-main.py` | 平台准入放行 linux；`DSH_DESKTOP_RESOURCES_DIR` / `DSH_DESKTOP_FORCE_PACKAGED`；托盘放行并改用 PNG；无托盘时关窗退出 | 启动即抛 `unsupported platform` |
+| `patch-mac-chrome.py` | 复用应用自带的 `data-windows-titlebar` 模式获得顶部预留带与拖拽区，绘制左上交通灯，侧栏毛玻璃 | 顶部有原生标题栏、按钮在右侧 |
+| `patch-fingerprint.py` | 放宽 V8 指纹匹配（x64 `0x17cdd`、arm64 `0x1df14` 写 `mov w0,#1; ret`） | 非 44.0.0 的 Electron 启动失败 |
+| `upgrade-mac-chrome.py` | 旧版 chrome 的增量修复 | 仅在树已打过旧版 chrome 时需要 |
+
+### 5. 装 Sharp 进程隔离
+
+```bash
 ./install-image-worker.sh out-x64 x64
-# 3) 打包
+```
+
+这一步会：
+
+- 把真正的 `sharp` 移入 `node_modules/.sharp-native-backup/`；
+- 在 `resources/image-worker/` 下建立私有依赖闭包（standalone Node 读不了 asar）；
+- 安装替身包，使 `require("sharp")` 走到 out-of-process worker。
+
+⚠️ 打包前**务必删除** `node_modules/.sharp-native-backup/`，否则会白占体积。
+
+### 6. 自检
+
+```bash
+# 图片链路与隔离（需图形环境或 xvfb）
+DSH_DESKTOP_RESOURCES_DIR=$PWD/out-x64/resources \
+  ELECTRON_RUN_AS_NODE=1 ./out-x64/deepseek-harness image-worker-src/verify-image-worker.cjs
+
+# 启动冒烟
+HOME=/tmp/t DSH_HOME=/tmp/t/.dsh xvfb-run -a ./out-x64/deepseek-harness --ozone-platform=x11 --disable-gpu
+# 看到 "dsh web: http://127.0.0.1:19387/" 即成功
+```
+
+### 7. arm64 同理
+
+把上面的 `x64` 换成 `arm64`（原生模块、Electron、Node、Python 载荷都要换对应架构）。
+
+---
+
+## 三、打包
+
+```bash
 ./build-packages.sh x64
 ./build-packages.sh arm64
-# 4) 验证
-./verify-launch-x64.sh && (cd dist && sha256sum -c SHA256SUMS.txt)
 ```
 
-完整的前置依赖清单、交叉打包注意事项与常见坑，见 **[README.zh.md](README.zh.md)**。
+产物落在 `dist/`：
+
+| 文件 | 说明 |
+|---|---|
+| `DeepSeek-Harness-0.2.1-rc.2-{x86_64,aarch64}.AppImage` | 内置 Electron，免安装 |
+| `deepseek-harness_0.2.1-rc.2_{amd64,arm64}.bundled.deb` | 内置 Electron |
+| `deepseek-harness-desktop-0.2.1_rc.2-1-{x86_64,aarch64}.pkg.tar.zst` | Arch，内置 Electron |
+| `deepseek-harness-0.2.1-0.rc2.{x86_64,aarch64}.rpm` | Fedora/openSUSE，内置 Electron |
+
+> 只发布 `bundled.deb`。不再提供 `system.deb`：Debian/Ubuntu 没有官方 electron 包，
+> 该变体在目标系统上无法直接安装。
+
+### 压缩设置
+
+四种格式**全部使用 zstd**，由 `build-packages.sh` 顶部常量统一控制：
+
+```bash
+ZSTD_LEVEL=19                  # 与 xz -9e 体积接近，解压快 3-5 倍
+ZSTD_OPTS="-19 -T0 --long=27"  # --long 提升大载荷压缩率
+```
+
+| 格式 | 实现 |
+|---|---|
+| `.deb` | `data.tar.zst` + `control.tar.zst`（`ar` 归档） |
+| `.rpm` | `_binary_payload w19.zstdio` |
+| `.pkg.tar.zst` | `tar \| zstd $ZSTD_OPTS` |
+| `.AppImage` | `mksquashfs -comp zstd -Xcompression-level 19 -Xdict-size 100% -b 1M` |
+
+**最低系统要求**（详见 `docs/ARTIFACTS.md` 的「系统要求」）：
+
+| 格式 | 要求 |
+|---|---|
+| deb | Ubuntu **21.04+**（dpkg 1.20.9ubuntu1+，Ubuntu 自带 backport）；Debian **12+**（dpkg 1.21.18+）。**Debian 11 及更早不支持** |
+| rpm | `rpm >= 4.14`（Fedora 31+ / openSUSE Leap 15.3+） |
+| pkg.tar.zst | pacman 5.x+（当前所有 Arch 系均满足） |
+| AppImage | squashfs-tools 4.4+ / 主流内核 |
+
+> ⚠️ Ubuntu 与 Debian 的 zstd 支持**不同步**：上游 Debian 在 dpkg 1.21.18 才加入，
+> 而 Ubuntu 从 21.04 起就有自己的 patch（`1.20.9ubuntu1`），并在 `1.21.1ubuntu1`
+> 把默认压缩改成 zstd。所以判断能否安装要看**发行版**，不能只看 dpkg 版本号。
+
+脚本要点：
+
+- **在 tmpfs 上暂存**并按文件内容（ELF / `#!` / `.so` / `.node`）恢复可执行位
+  —— 若工作区在 NTFS/exFAT 上，`chmod` 无效且一切显示 0777；
+- 归档属主统一 `root:root`；rpm 用 `%defattr(-,root,root,-)` 保留归一化权限；
+- 禁止 rpmbuild strip 厂商预编译二进制；
+- `chrome-sandbox` 的 setuid 由各包脚本设置（deb `postinst` / rpm `%attr(4755)` / pacman `.INSTALL`）。
+
+### aarch64 交叉打包注意
+
+- 用 `--platform manylinux_2_28_aarch64` 安装 Python 包（`manylinux2014` 标签已过时）；
+- x86_64 主机上 rpmbuild 默认拒绝 aarch64 目标，需补 `buildarch_compat`：
+  ```
+  buildarch_compat: x86_64: aarch64 noarch
+  arch_compat: x86_64: aarch64
+  ```
 
 ---
 
-## 两个值得说明的实现
+## 四、验证
 
-### Sharp / libvips 进程隔离
-
-SIGSEGV 是进程级信号，JS 层无法捕获，因此**只能真正隔离进程**：
-
-```
-resources/
-├── app/dsh/node_modules/sharp/     替身包：只转发调用，不含原生库
-└── image-worker/
-    ├── client.cjs                  记录链式调用 → 转发给 worker
-    ├── worker.cjs                  在独立 Node 中重放并执行 libvips
-    └── worker-modules/node_modules/ 私有依赖闭包（standalone Node 读不了 asar）
+```bash
+./verify-launch-x64.sh          # 五种格式逐个解包并实际启动
+cd dist && sha256sum -c SHA256SUMS.txt
 ```
 
-worker 崩溃只影响当次图片操作：客户端自动重启，连续 3 次失败后熔断，桌面端不受影响。
+arm64 可用 qemu 验证载荷：
 
-### macOS 风格窗口装饰
-
-不自造轮子，而是**复用应用自带机制**：
-
-- 用 `html[data-windows-titlebar]`（原本只在 Windows 启用的自绘标题栏模式）拿到
-  48px 顶部预留带、自动拖拽区与页面内边距；
-- 交通灯按应用自身常量 `trafficLightPosition {x:16, y:18}` 绘制，点击走新增 IPC；
-- 侧栏毛玻璃**逐字复刻**应用 `[data-platform=darwin]` 的配方
-  （`color-mix(... 50%, transparent)` + 竖向渐变 + `backdrop-filter: blur(40px) saturate(150%)`）；
-- **刻意不改 `data-platform`**：该属性同时决定快捷键把 `primary` 解析成 ⌘ 还是 Ctrl，
-  伪造 darwin 会破坏 Linux 快捷键语义。
+```bash
+qemu-aarch64-static -L <sysroot> out-arm64/resources/runtime/.../node -e "console.log(process.arch)"
+```
 
 ---
 
-## 已知问题（非本移植引入）
+## 五、这套移植在改什么（原理速览）
 
-- `dsh-connect-workbuddy@1.4.0` 读 `info.multimodal`，而接口返回 `supportsImages`，
-  导致 16/16 模型被算出 `inputModalities=["text"]`，发图报 `session/agent-busy`。
-  macOS / Windows 上同样存在。
+官方只发布 macOS/Windows 包，Linux 分支在代码里是空实现。移植 = **补上那些空分支**：
+
+1. **平台准入**：`main.js` 的白名单只有 `win32`/`darwin` → 加入 `linux`。
+2. **原生模块**：把 darwin/win32 预编译产物换成 linux 产物（应用层 JS 通用）。
+3. **运行时**：Node/Python 换成 Linux 构建，`runtime.json` 平台字段改掉。
+4. **resources 根**：原实现依赖 `process.resourcesPath`，系统 Electron 下会指错 →
+   增加 `DSH_DESKTOP_RESOURCES_DIR`。
+5. **打包态**：系统 Electron 加载 app 目录时 `app.isPackaged` 为 false →
+   增加 `DSH_DESKTOP_FORCE_PACKAGED=1`。
+6. **V8 指纹**：原生插件只认 43.0.0/44.0.0/45.0.0-alpha.6 →
+   放宽匹配函数（不降级 Electron）。
+7. **Sharp 崩溃**：libvips 在 Electron 内段错误且 JS 无法捕获 →
+   改成独立 Node 进程隔离。
+8. **窗口装饰**：复用应用自身的 `data-windows-titlebar` 模式 +
+   复刻它自己的 darwin 材质配方，得到左置交通灯与侧栏毛玻璃。
+
+详细根因与验证记录见 `docs/CHANGELOG.md`。
 
 ---
 
-## 许可
+## 六、常见坑
 
-应用本体版权归 **DeepSeek**。本仓库只做重新打包的工具链，不修改业务逻辑；
-请遵守原应用许可条款，勿将重打包产物用于商业分发。
+| 现象 | 原因与处理 |
+|---|---|
+| `desktop policy: unsupported platform` | `patch-main.py` 没打 |
+| `unsupported Electron runtime fingerprint` | `patch-fingerprint.py` 没打 |
+| 启动即 `EADDRINUSE 127.0.0.1:19387` | 已有一个实例在跑（应用固定用这个端口），先关掉 |
+| 图片一发就整个应用崩 | Sharp 替身包没装好，检查 `resources/image-worker/` |
+| 侧栏折叠后无法展开 / 侧栏右缘缺口 / 文字发灰 | 均因 `backdrop-filter` 放在侧栏元素上（旧版缺陷）。现由独立层 `#dsh-mac-vibrancy` 承担模糊，且插在 `#root` 之前 + `z-index:-1` |
+| 内容区左上角露白、全屏布局不对 | 应用给 `_centerCol` 的 16px 圆角 + 缺全屏规则；已置零圆角并对齐 macOS 全屏（隐藏交通灯、折叠键靠左） |
+| 真全屏（niri 等平铺合成器）不隐藏交通灯 | 上游把 Linux 排除在事件注册与 preload 监听之外，且平铺合成器不报告全屏；已补视口自检 |
+| 侧栏底部有实心暗条 | 应用的列表淡出层渐变到不透明的 `--dsw-specific-sidebar-fill`；已改用半透明 tint 变量 |
+| 登录页文字全消失 | `preload-welcome.cjs` 重复声明 `VIBRANCY_ID` 导致 preload 语法错误 |
+| 系统 Electron 下白屏 | 缺 `DSH_DESKTOP_RESOURCES_DIR` / `DSH_DESKTOP_FORCE_PACKAGED` |
+| 打包后二进制没有执行权限 | 工作区在 NTFS；`build-packages.sh` 的 `normalize_modes` 必须保留 |
+| Python 报 `symbol lookup error` | 用了被 `strip` 过的 python-build-standalone，改用 `install_only_stripped` |
+| `dpkg -i` 报 control 文件格式错误 | 生成 control 时可选字段展开成了空行（空行=段落分隔符）；已改为整行省略。见 CHANGELOG 的 issue #1 条目 |
 
-## Linux 全屏交通灯
+---
 
-沿用上游的全屏及平铺窗口判断。全屏时默认隐藏交通灯，鼠标移到窗口顶部任意横向位置的 4px 边缘后，侧栏按钮向右滑动让位，再显示交通灯。显示后，鼠标在顶部背景条的实际可见范围内移动时保持显示（边界读取自背景层，随布局变化），离开后延迟 200ms 收起。XWayland 通过窗口层面的鼠标位置判断背景条边界，保留顶部原生拖拽与双击还原；坐标换算包含窗口所在显示器的位置和页面缩放。原生 Wayland 不提供全局鼠标位置，全屏布局改用页面鼠标事件，并补上最大化时的双击还原。窗口状态轮询同时兼容从 KWin 菜单进入全屏的情况。原有背景材质保持不变，普通窗口的交通灯保持原有显示方式。
+## 七、许可与声明
 
-触发与保持显示的行为参考 [Apple 全屏使用说明](https://support.apple.com/zh-cn/guide/mac-help/mchl9c21d2be/mac)和 [窗口工具栏全屏可见性文档](https://developer.apple.com/documentation/swiftui/view/windowtoolbarfullscreenvisibility(_:))。触发边缘高度、收起延迟和按钮位移动画是本项目的适配参数，Apple 文档未规定这些数值。
-
-## KDE 窗口材质
-
-KDE 的 XWayland 窗口通过 `xprop` 请求 KWin 背景模糊；需要系统提供 `xprop`，并在 KWin 中启用背景模糊效果。原生 Wayland、缺少 `xprop` 或无法验证 X11 窗口归属时保留实色回退。欢迎页在实色模式下整页不透明，避免左右两侧材质不一致。
-
-以上窗口交互和材质行为已在 KDE KWin 6.7.4 的 XWayland、原生 Wayland 下验证；其他桌面环境未实测。
+- 应用本体版权归 **DeepSeek**，本工具链只做重新打包，不修改业务逻辑；
+- 请遵守原应用的许可条款，勿将重打包产物用于商业分发；
+- 官方无 Linux 更新源，产物已移除 `app-update.yml`，升级需重新打包。

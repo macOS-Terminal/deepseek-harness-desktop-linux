@@ -217,15 +217,24 @@ ZSTD_OPTS="-19 -T0 --long=27" # --long 提升大载荷压缩率
 
 ### ⚠️ 必须向用户声明的兼容性影响
 
-**zstd 压缩的 `.deb` 需要 `dpkg >= 1.21.18`**（2023-03 起）：
+zstd 压缩的 deb 需要 dpkg 支持 `data.tar.zst`。**Ubuntu 与 Debian 的引入版本不同步**：
 
 | 发行版 | dpkg | 能否安装 |
 |---|---|---|
-| Debian 12 / 13 | 1.21.22+ | ✅ |
-| Ubuntu 24.04+ | 1.22.6+ | ✅ |
-| **Ubuntu 22.04 LTS** | 1.21.1 | ❌ `unknown compression for member 'data.tar.zst'` |
+| Ubuntu 21.04 (hirsute) 及更新 | 1.20.9ubuntu1+ | ✅ |
+| Ubuntu 22.04 LTS (jammy) | 1.21.1ubuntu2 | ✅ |
+| Ubuntu 24.04 LTS (noble) | 1.22.6ubuntu6 | ✅ |
+| Debian 12 (bookworm) 及更新 | 1.21.22+ | ✅ |
+| **Debian 11 (bullseye) 及更早** | 1.20.13 | ❌ |
 
-请在交付说明里明确写出，避免 22.04 用户误判为坏包。
+> ⚠️ **不能按上游 dpkg 版本号统一判断。** 上游 Debian 在 **1.21.18**
+> （`libdpkg: Add zstd support for .deb archives. Closes: #892664`）才引入；
+> 而 Ubuntu **21.04 起就有自己的 patch**（`dpkg 1.20.9ubuntu1`：
+> `Add Zstd compression and decompression support for binary packages`），
+> 并在 `1.21.1ubuntu1` 把默认压缩从 xz 改成 zstd（LP: #1923845）。
+> 所以 Ubuntu 22.04（dpkg 1.21.1）**可以**装，Debian 11（1.20.13）**不行**。
+
+请在交付说明里明确写出这一点。
 
 ---
 
@@ -316,7 +325,7 @@ qemu-aarch64-static -L <sysroot> <arm64-node> -e "console.log(process.arch)"   #
 - 指纹字节：Matches 处 hex
 
 ## 兼容性说明
-（明确写出 zstd deb 需要 dpkg >= 1.21.18，并列出受影响的发行版）
+（明确写出 zstd deb 的发行版支持范围：Ubuntu 21.04+ / Debian 12+；并说明 Ubuntu 与 Debian 引入版本不同步）
 
 ## 未能验证的部分
 （如实列出；不要用"应该没问题"代替证据）

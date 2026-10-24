@@ -1,9 +1,58 @@
 # DeepSeek Harness — Linux 移植产物
 
-由官方 **macOS arm64** 安装包（`DeepSeek Harness 0.2.0-rc.2.dmg`）中的应用载荷重新打包为 Linux 版本。
-上游应用：`@deepseek-ai/dsh-desktop 0.2.0-rc.2`。
+由官方 **macOS arm64** 安装包（`DeepSeek Harness 0.2.1-rc.2.dmg`）中的应用载荷重新打包为 Linux 版本。
+上游应用：`@deepseek-ai/dsh-desktop 0.2.1-rc.2`。
 
-覆盖 **x86_64** 与 **aarch64** 两种架构，各 5 种分发格式，共 **10 个产物**。
+覆盖 **x86_64** 与 **aarch64** 两种架构，各 4 种分发格式，共 **8 个产物**（不含 `system.deb`）。
+
+## 系统要求
+
+四种格式（AppImage / deb / pkg.tar.zst / rpm）**全部使用 zstd 压缩**，因此对解包工具
+有最低版本要求。以下版本号均已逐条查证。
+
+### deb（dpkg）
+
+zstd 压缩的 deb 需要 dpkg 支持 `data.tar.zst`。
+
+| 发行版 | dpkg | 支持 |
+|---|---|---|
+| Ubuntu 21.04 (hirsute) 及更新 | 1.20.9ubuntu1+ | ✅ |
+| Ubuntu 22.04 LTS (jammy) | 1.21.1ubuntu2 | ✅ |
+| Ubuntu 24.04 LTS (noble) | 1.22.6ubuntu6 | ✅ |
+| Debian 12 (bookworm) 及更新 | 1.21.22+ | ✅ |
+| **Debian 11 (bullseye) 及更早** | 1.20.13 | ❌ |
+
+> **注意 Ubuntu 与 Debian 不同步。** zstd 支持在上游 Debian 是 **1.21.18**
+> （`libdpkg: Add zstd support for .deb archives. Closes: #892664`），
+> 但 Ubuntu **21.04 就已通过自己的 patch 引入**（`dpkg 1.20.9ubuntu1` hirsute：
+> `Add Zstd compression and decompression support for binary packages`），
+> 并在 `1.21.1ubuntu1` 把默认压缩从 xz 改为 zstd（LP: #1923845）。
+> 所以**不能按上游 dpkg 版本号判断** Ubuntu 的能力。
+
+### AppImage
+zstd 压缩的 squashfs 需要 squashfs-tools 4.4+ 或内核支持。
+主流发行版（Ubuntu 20.04+ / Debian 11+ / Fedora 33+ / Arch）均满足。
+AppImage 运行时自解压，无需安装。
+
+### pkg.tar.zst（Arch / Manjaro）
+pacman 自 5.x 起原生支持 zstd，所有当前受支持的 Arch 系发行版均满足。
+
+### rpm（Fedora / openSUSE）
+zstd payload 需 `rpm >= 4.14`（Fedora 31+ / openSUSE Leap 15.3+）。
+更早的 rpm 会报 `Unsupported payload compressor: zstdio`。
+
+### 快速自检
+
+```bash
+# deb
+ar t deepseek-harness_*_amd64.bundled.deb        # 应含 data.tar.zst
+# rpm
+rpm -qp --qf '%{PAYLOADCOMPRESSOR}\n' *.rpm      # 应输出 zstd
+# pkg.tar.zst
+bsdtar -tf *.pkg.tar.zst | head -1
+# AppImage
+./*.AppImage --appimage-extract >/dev/null && echo ok
+```
 
 ## 产物清单
 
