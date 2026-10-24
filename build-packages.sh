@@ -11,8 +11,8 @@
 set -euo pipefail
 B="$(cd "$(dirname "$0")" && pwd)"
 ARCH="${1:?用法: build-packages.sh <x64|arm64>}"
-VER="0.2.0-rc.2"                     # upstream version (macOS dmg 0.2.0-rc.2)
-VER_PKG="0.2.0_rc.2"
+VER="0.2.1-rc.2"                     # upstream version (macOS dmg 0.2.1-rc.2)
+VER_PKG="0.2.1_rc.2"
 
 case "$ARCH" in
   x64)   TREE=out-x64;   DEBARCH=amd64;   PKGARCH=x86_64;  RPMARCH=x86_64;  AIARCH=x86_64 ;;
@@ -27,6 +27,18 @@ rm -rf "$WORK"; mkdir -p "$OUT" "$WORK"
 say() { printf '\n== %s ==\n' "$*"; }
 
 # Restore sane modes: NTFS reports 0777 for everything, so infer from content.
+# 精简运行时冗余（详见 trim-app-tree.sh）。每次打包复制后调用，
+# 保证四种产物格式都得到同样裁剪。
+trim_tree() {
+  local target="$1"
+  local script="$B/trim-app-tree.sh"
+  [ -x "$script" ] || return 0
+  # 只裁剪含 resources/ 的目录
+  if [ -d "$target/resources" ]; then
+    "$script" "$target" >/dev/null 2>&1 || echo "  ! 裁剪跳过（$target）" >&2
+  fi
+}
+
 normalize_modes() { python3 - "$1" <<'PYEOF'
 import os, sys
 root = sys.argv[1]
@@ -122,6 +134,7 @@ build_deb() {
   if [ "$variant" = bundled ]; then
     cp -a "$SRC/." "$D/usr/lib/deepseek-harness/"
     normalize_modes "$D/usr/lib/deepseek-harness"
+    trim_tree "$D/usr/lib/deepseek-harness"
     printf '#!/bin/sh\nexec /usr/lib/deepseek-harness/deepseek-harness "$@"\n' > "$D/usr/bin/deepseek-harness"
     deps="libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0, libgbm1, libasound2, libdrm2, libxkbcommon0, libxcomposite1, libxdamage1, libxfixes3, libxrandr2, libcups2, libx11-xcb1, libxcb-dri3-0"
   else
@@ -196,6 +209,7 @@ build_rpm() {
   rm -rf "$top"; mkdir -p "$top"/{BUILD,RPMS,SOURCES,SPECS,SRPMS,tmp,BUILDROOT}
   cp -a "$SRC" "$top/SOURCES/app"
   normalize_modes "$top/SOURCES/app"
+  trim_tree "$top/SOURCES/app"
   cp "$B/icons/deepseek-harness.desktop" "$top/SOURCES/"
   cp -a "$META/icons" "$top/SOURCES/icons"
   cat > "$top/SPECS/deepseek-harness.spec" <<SPEC
@@ -273,7 +287,8 @@ build_pkgtar() {
   rm -rf "$r"; mkdir -p "$r/usr/lib/deepseek-harness" "$r/usr/bin" \
     "$r/usr/share/applications" "$r/usr/share/icons/hicolor"
   cp -a "$SRC/resources" "$r/usr/lib/deepseek-harness/resources"
-  normalize_modes "$r/usr/lib/deepseek-harness/resources"
+  normalize_modes "$r/usr/lib/deepseek-harness"
+  trim_tree "$r/usr/lib/deepseek-harness"
   rm -f "$r/usr/lib/deepseek-harness/resources/app-update.yml"
   cp "$META/launcher" "$r/usr/bin/deepseek-harness"
   chmod 755 "$r/usr/bin/deepseek-harness"
@@ -326,6 +341,7 @@ build_appimage() {
   rm -rf "$A" "$WORK/app.squashfs"; mkdir -p "$A"
   cp -a "$SRC/." "$A/"
   normalize_modes "$A"
+  trim_tree "$A"
   mkdir -p "$A/usr/share/applications" "$A/usr/share/icons/hicolor"
   cp "$B/icons/deepseek-harness.desktop" "$A/usr/share/applications/"
   cp "$B/icons/deepseek-harness.desktop" "$A/deepseek-harness.desktop"
@@ -346,8 +362,11 @@ build_appimage() {
 }
 
 say "构建 $ARCH 全部格式 (工作区: $WORK)"
+# Only the bundled deb is shipped: the system variant depends on a
+# distribution Electron package, and Debian/Ubuntu ship none, so it could not be
+# installed there without a third-party source. The bundled build is
+# self-contained and is what the release notes point users at.
 build_deb bundled
-build_deb system
 build_pkgtar
 build_rpm
 build_appimage
