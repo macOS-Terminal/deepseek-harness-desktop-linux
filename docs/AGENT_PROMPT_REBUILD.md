@@ -150,6 +150,18 @@ asar 格式：头 16 字节，`[12:16]` 是 JSON 头长度，
 > `trim-app-tree.sh` 末尾的**静态 import 完整性自检**会拦截此类误删，
 > 出现 `✗ … 静态 import 目标缺失` 时**必须修好再继续**。
 
+**托盘图标（务必确认）**：`build-packages.sh` 会自动把
+`icons/32x32/deepseek-harness.png` 复制为构建树 `resources/tray.png`。
+上游的打包分支读 `tray.ico`，而官方 dmg 里没有这个文件；且
+`nativeImage.createFromPath()` 对不存在的文件返回**空图**（0×0）而不抛错 ——
+于是 `new Tray(...)` 成功、托盘存在、但**图标完全不显示**。
+补丁已改为回退链（`tray.png` → `icon.png` → 开发路径），只要 `resources/tray.png` 到位即生效。
+构建后请确认：
+
+```bash
+ls -la out-x64/resources/tray.png     # 应存在（约 2.2 KB）
+```
+
 其余装配要点：
 - `resources/runtime/` 放 `bin/node`、`cli/`、`office-skills/`、`versions.json`
 - `resources/runtime/primary-runtime/dependencies/` 放 `node/`、`python/`、`pnpm/`
@@ -226,6 +238,7 @@ cd dist && sha256sum -c SHA256SUMS.txt
 | 能启动 | 解包后跑，`--ozone-platform=x11 --disable-gpu`（无显示用 `xvfb-run -a`） | 日志出现 `dsh web: http://127.0.0.1:19387/` |
 | **静态 import 完整** | 打包时 `trim-app-tree.sh` 的自检输出 | `✓ 107 个静态 import 目标全部可解析` |
 | 补丁生效 | 查 `resources/app/lib/main.js` | 含 `desktopResourcesRoot`、`desktopIsPackaged`、`linux-window-control` |
+| **托盘图标** | `ls <app>/resources/tray.png`；用 `nativeImage.createFromPath()` 读它 | 文件存在；`isEmpty()=false`、尺寸 32×32 |
 | 指纹已打 | 查 addon 的 `Matches` 处字节 | x64 `b8010000`、arm64 `20008052` |
 | Sharp 隔离 | `ELECTRON_RUN_AS_NODE=1 <app> image-worker-src/verify-image-worker.cjs` | `✅ 图片链路与隔离均通过` |
 | deb 可解析 | `ar t <deb>` | 含 `data.tar.zst`、`control.tar.zst` |
@@ -350,6 +363,7 @@ ZSTD_OPTS="-19 -T0 --long=27" # --long 提升大载荷压缩率
 | `ar x` 失败 | 工作区在 NTFS 时 ar 行为异常，先 `cp` 到 tmpfs 操作 |
 | **`Cannot find module '.../app.asar/...'`** | 包是用 asar 布局打的。Host 用 standalone Node 启动，**读不了 asar**。必须用平铺布局 `resources/app/` |
 | `trim-app-tree.sh` 报静态 import 缺失 | 裁掉了被顶层 import 的包。**修好再继续**，不要跳过 |
+| **托盘图标不显示**（托盘位置有个空白项） | `resources/tray.png` 缺失。`nativeImage.createFromPath()` 对缺失文件返回空图而不抛错，托盘会"创建成功但看不见"。确认 `build-packages.sh` 已把 `icons/32x32/deepseek-harness.png` 装成 `resources/tray.png` |
 
 ---
 
@@ -359,6 +373,7 @@ ZSTD_OPTS="-19 -T0 --long=27" # --long 提升大载荷压缩率
 2. **不要构建 `system.deb`**。
 3. **不要降级 Electron**。
 4. **不要裁剪任何被顶层静态 import 的包**（见 4.3 的说明与自检）。
+   也不要删除 `resources/tray.png` —— 缺它会让托盘图标变成空白（不是报错）。
 5. **不要为了让测试通过而放宽断言。** 验证不过就如实报告。
 6. 四种格式**必须都用 zstd**（第 6 节）。
 7. 磁盘：完整构建约需 15 GB 空闲。

@@ -145,10 +145,25 @@ def main() -> int:
         missing.append('app.isPackaged 未找到')
 
     # 6) tray icon + creation ------------------------------------------------
+    # Tray icon on Linux.
+    #
+    # The upstream path points at files that do not exist in the Linux payload:
+    #   - the packaged branch reads `tray.ico` from the resources root, and the
+    #     upstream dmg ships no such file (it has `icon.png` / `icon.icns` only);
+    #   - `nativeImage.createFromPath()` on a missing file yields an EMPTY image
+    #     (0x0) instead of throwing, so `new Tray(...)` succeeds and the tray
+    #     exists but renders nothing — the icon silently disappears.
+    # The Linux build therefore ships a real 32x32 PNG as `tray.png` beside the
+    # application tree and resolves it with a fallback chain, so a missing file
+    # degrades to the application icon instead of an invisible tray.
     sub(
         'const trayIconPath = development ? join(app.getAppPath(), "resources", "tray-windows.ico") : join(process.resourcesPath, "tray.ico");',
-        'const trayIconPath = process.platform === "linux" ? development ? join(app.getAppPath(), "resources", "icon.png") : join(desktopResourcesRoot(), "tray.png") : development ? join(app.getAppPath(), "resources", "tray-windows.ico") : join(desktopResourcesRoot(), "tray.ico");',
-        '托盘图标：Linux 使用 PNG',
+        'const trayIconPath = process.platform === "linux" ? '
+        '[join(desktopResourcesRoot(), "tray.png"), join(desktopResourcesRoot(), "icon.png"), '
+        'join(app.getAppPath(), "resources", "tray.png"), join(app.getAppPath(), "resources", "icon.png")].find((p) => existsSync(p)) '
+        '?? join(desktopResourcesRoot(), "tray.png") '
+        ': development ? join(app.getAppPath(), "resources", "tray-windows.ico") : join(desktopResourcesRoot(), "tray.ico");',
+        '托盘图标：Linux 使用真实存在的 PNG（带回退链）',
     )
     sub(
         'if (process.platform === "win32") try {\n\t\ttray = new DesktopTray({',

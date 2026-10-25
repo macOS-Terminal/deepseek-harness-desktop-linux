@@ -105,6 +105,19 @@ for s in 16 24 32 48 64 128 256 512; do
   cp "$B/icons/${s}x${s}/deepseek-harness.png" "$META/icons/${s}x${s}/"
 done
 
+# Tray icon for the Linux build.
+#
+# Upstream's packaged branch reads `tray.ico` from the resources root, but the
+# upstream dmg ships no such file, and nativeImage.createFromPath() on a missing
+# file yields an EMPTY image rather than throwing — so the tray is created and
+# renders nothing. Ship a real 32x32 PNG as `tray.png` in the resources root of
+# each build tree so the tray actually shows an icon.
+for tree in out-x64 out-arm64; do
+  [ -d "$B/$tree/resources" ] || continue
+  cp "$B/icons/32x32/deepseek-harness.png" "$B/$tree/resources/tray.png"
+  printf '  · %s/resources/tray.png\n' "$tree"
+done
+
 # Launcher used by the system-Electron variants.
 cat > "$META/launcher" <<'LAUNCH'
 #!/bin/sh

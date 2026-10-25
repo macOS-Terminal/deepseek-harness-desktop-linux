@@ -102,6 +102,49 @@ pnpm 从 `runtime/pnpm/` 移至 `runtime/primary-runtime/dependencies/pnpm/`。
   `connection (required) missing credentials`），证明裁剪未引入退化
 - 脚本幂等
 
+### 修复 — Linux 托盘图标不显示（空白托盘）
+
+**症状**：托盘栏里有一个位置，但**什么都不显示**（不是没有托盘，是图标空白）。
+
+**根因**：补丁把 Linux 的托盘图标指向 `desktopResourcesRoot()/tray.png`，
+但**这个文件从来不存在**：
+
+- 上游打包分支读的是 `tray.ico`，而官方 dmg 的 `Resources/` 只有
+  `icon.png` / `icon.icns`，没有 `tray.ico`；
+- 移植时也从未把任何图标放进 `resources/` 根 —— 实测成品 deb 的
+  `resources/` 下只有 `app/`、`runtime/`、`image-worker/` 三个目录，
+  连 `icon.png` 都没有（应用图标只装到了 `usr/share/icons/hicolor/`）。
+
+关键在于**失败是静默的**：`nativeImage.createFromPath()` 对不存在的文件
+返回**空图**而不是抛错：
+
+```
+① createFromPath(不存在)   → isEmpty=true  size={"width":0,"height":0}
+   new Tray(空图)           → 成功（但图标不可见）
+② createFromPath(32x32 PNG) → isEmpty=false size={"width":32,"height":32}
+   new Tray(有效图)         → 成功
+```
+
+所以 `new Tray(...)` 不抛错、托盘被创建，只是渲染不出任何东西。
+
+**修复**：
+1. `build-packages.sh` 把 `icons/32x32/deepseek-harness.png` 装为
+   每个构建树的 `resources/tray.png`（约 2.2 KB）。
+2. `patch-main.py` 的托盘路径改为**回退链**：
+   `tray.png` → `icon.png` → 开发模式路径，全部用 `existsSync()` 判定，
+   找不到才回落到 `tray.png`。即便图标文件意外缺失，也不会再出现
+   "创建成功但不可见"的空白托盘。
+
+实测（Electron 真实构造 Tray）：
+```
+路径: /usr/lib/deepseek-harness/resources/tray.png
+isEmpty: false | size: {"width":32,"height":32}
+Tray 创建: 成功 | 图像非空: true
+```
+
+> 与「无托盘时关窗直接退出」那条修复是配套的：托盘真正可用后，
+> 关窗隐藏窗口 + 托盘召回才是完整闭环。
+
 ### 修复 — Agent 预设「加载失败」（非个例，四个模式中三个失效）
 
 **症状**：设置 → Agent 预设页，标准模式 / PTC 模式 / 创造模式 三个卡片都带红色
