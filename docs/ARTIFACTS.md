@@ -14,17 +14,17 @@
 |---|---|---|---|
 | `DeepSeek-Harness-0.2.1-rc.2-x86_64.AppImage` | 287.5 MB | 内置 44.7.0 | 免安装，通用 |
 | `deepseek-harness_0.2.1-rc.2_amd64.bundled.deb` | 258.7 MB | 内置 44.7.0 | Debian 12+ / Ubuntu 21.04+ |
-| `deepseek-harness-0.2.1-0.rc2.x86_64.rpm` | 273.7 MB | 内置 44.7.0 | Fedora 31+ / openSUSE Leap 15.3+ |
+| `deepseek-harness-0.2.1-0.rc2.x86_64.rpm` | 273.8 MB | 内置 44.7.0 | Fedora 31+ / openSUSE Leap 15.3+ |
 | `deepseek-harness-desktop-0.2.1_rc.2-1-x86_64.pkg.tar.zst` | 169.6 MB | **依赖系统** | Arch Linux |
 
 ### aarch64 (arm64)
 
 | 文件 | 大小 | Electron | 适用发行版 |
 |---|---|---|---|
-| `DeepSeek-Harness-0.2.1-rc.2-aarch64.AppImage` | 283.6 MB | 内置 44.7.0 | 免安装，通用 |
-| `deepseek-harness_0.2.1-rc.2_arm64.bundled.deb` | 253.3 MB | 内置 44.7.0 | Debian 12+ / Ubuntu 21.04+ |
-| `deepseek-harness-0.2.1-0.rc2.aarch64.rpm` | 269.8 MB | 内置 44.7.0 | Fedora 31+ / openSUSE Leap 15.3+ |
-| `deepseek-harness-desktop-0.2.1_rc.2-1-aarch64.pkg.tar.zst` | 164.8 MB | **依赖系统** | Arch Linux |
+| `DeepSeek-Harness-0.2.1-rc.2-aarch64.AppImage` | 282.0 MB | 内置 44.7.0 | 免安装，通用 |
+| `deepseek-harness_0.2.1-rc.2_arm64.bundled.deb` | 252.0 MB | 内置 44.7.0 | Debian 12+ / Ubuntu 21.04+ |
+| `deepseek-harness-0.2.1-0.rc2.aarch64.rpm` | 268.2 MB | 内置 44.7.0 | Fedora 31+ / openSUSE Leap 15.3+ |
+| `deepseek-harness-desktop-0.2.1_rc.2-1-aarch64.pkg.tar.zst` | 163.3 MB | **依赖系统** | Arch Linux |
 
 > **只提供 `bundled.deb`。** 不再有 `system.deb`：Debian/Ubuntu 官方仓库没有 electron 包，
 > 该变体在目标系统上无法直接安装。
@@ -208,7 +208,39 @@ resources/
 - **Arch 包名**为 `deepseek-harness-desktop`（而非 `deepseek-harness`），
   以免顶掉 archlinuxcn 仓库的 npm 版。桌面版仍提供 `/usr/bin/deepseek-harness`。
 
-### 5. 体积裁剪
+### 5. 修复 — Agent 预设「加载失败」与 Tray 空白图标
+
+**Agent 预设「加载失败」**（标准/PTC/创造三模式，极简模式正常）
+
+根因是上一轮体积裁剪误删了 `@deepseek-ai/dsh-sandbox-windows-acl`。
+它虽是 Windows 专用 ACL 沙箱，但 `dsh-sandbox-local` 在**顶层静态 import** 它，
+而 ESM 静态 import 无法按平台条件化，Linux 上同样求值 —— 包缺失导致整个
+`dsh-sandbox-local` 插件加载失败，`sandbox`/`shell`/`ptcRuntime`/`workflowEngine`
+四个服务随之缺失，预设审计出 pending 行即判定 broken。
+
+```
+sandbox (@deepseek-ai/dsh-sandbox-local): failed to import:
+  Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@deepseek-ai/dsh-sandbox-windows-acl'
+```
+
+现已保留该包（72 KB），并在 `trim-app-tree.sh` 增加**静态 import 完整性自检**
+（解析所有 `@deepseek-ai` 包的顶层静态 import，缺失则非零退出），
+`swap-native-linux.sh` 也会在缺失时按 `dsh-sandbox-local` 的版本自动补装。
+
+**托盘图标不显示（空白托盘）**
+
+补丁把托盘图标指向 `resources/tray.png`，但该文件从未存在（上游只带
+`icon.png`/`icon.icns`）。关键在于失败是**静默的**：
+`nativeImage.createFromPath()` 对缺失文件返回**空图**（0×0）而非抛错，
+于是 `new Tray()` 成功、托盘被创建，但什么都不显示。
+
+现由 `build-packages.sh` 把 `icons/32x32/deepseek-harness.png` 装为
+`resources/tray.png`（2.2 KB），补丁路径改为回退链
+（`tray.png` → `icon.png` → 开发路径，均用 `existsSync()` 判定）。
+
+实测：`isEmpty: false | size: {"width":32,"height":32}`。
+
+### 6. 体积裁剪
 
 打包时自动调用 `trim-app-tree.sh`，移除运行时确实不用的载荷：
 npm/corepack（应用只用 pnpm）、`node/share`、openssl 的 20 个非本架构头文件变体、
@@ -233,6 +265,8 @@ Windows 专用沙箱包、`LICENSES.chromium.html`。
 | ARM64 sharp | libvips 完整编解码（jpeg/webp/resize） | ✅ |
 | 架构审计 | x64 树无 arm64 残留、arm64 树无 x86-64 残留 | ✅ 0 处 |
 | 交通灯左置 + 侧栏透明 | 侧栏像素 alpha=0.5；交通灯位于 (16,18)；`data-platform` 保持 linux | ✅ |
+| **Agent 预设四模式可用** | 加载真实 desktop profile 调 `agentPresets.list()` | ✅ 4/4 `broken=(无)` |
+| **托盘图标** | `nativeImage.createFromPath(resources/tray.png)` | ✅ `isEmpty=false`、32×32 |
 | 8 个包 | `sha256sum -c SHA256SUMS.txt` | ✅ 8/8 |
 
 ## 已知问题
