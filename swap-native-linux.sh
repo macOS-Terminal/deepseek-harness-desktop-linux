@@ -70,6 +70,28 @@ echo "== 清理 macOS 扩展属性影子文件 =="
 # 它们不是包，但会让"darwin 残留"计数失真，且对 Linux 无意义。
 find "$NM" -name '*:com.apple.provenance' -delete 2>/dev/null || true
 
+# 必备的跨平台包：dsh-sandbox-local 顶层静态 import 它，删掉会让整个
+# dsh-sandbox-local 插件加载失败（sandbox/shell/ptcRuntime/workflowEngine
+# 四个服务随之缺失，Agent 预设的标准/PTC/创造模式会显示「加载失败」）。
+# 它虽是 Windows 专用的 ACL 沙箱，但 ESM 静态 import 无法按平台条件化，
+# Linux 上同样会被求值，因此必须保留。缺失时从 npm 取回。
+ACL="$NM/@deepseek-ai/dsh-sandbox-windows-acl"
+if [ ! -d "$ACL" ]; then
+  echo "  · 补装 dsh-sandbox-windows-acl（dsh-sandbox-local 静态依赖，不可裁剪）"
+  ver=$(python3 -c "
+import json
+print(json.load(open('$NM/@deepseek-ai/dsh-sandbox-local/package.json'))['version'])" 2>/dev/null)
+  tmp="$(mktemp -d)"
+  if curl -sL --max-time 120 -o "$tmp/a.tgz" \
+      "https://registry.npmjs.org/@deepseek-ai/dsh-sandbox-windows-acl/-/dsh-sandbox-windows-acl-${ver}.tgz" \
+      && tar xzf "$tmp/a.tgz" -C "$tmp" 2>/dev/null; then
+    mv "$tmp/package" "$ACL"; printf '    ✓ %s\n' "$ver"
+  else
+    echo "    ✗ 补装失败：$ACL 缺失会导致 sandbox 插件加载失败" >&2
+  fi
+  rm -rf "$tmp"
+fi
+
 echo "== 结果核对 =="
 printf '  darwin 残留: %s\n' "$(find "$NM" -maxdepth 2 -name '*darwin*' 2>/dev/null | wc -l)"
 printf '  linux 包:    %s\n' "$(find "$NM" -maxdepth 2 -name '*linux*' 2>/dev/null | wc -l)"

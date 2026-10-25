@@ -102,6 +102,58 @@ pnpm 从 `runtime/pnpm/` 移至 `runtime/primary-runtime/dependencies/pnpm/`。
   `connection (required) missing credentials`），证明裁剪未引入退化
 - 脚本幂等
 
+### 修复 — Agent 预设「加载失败」（非个例，四个模式中三个失效）
+
+**症状**：设置 → Agent 预设页，标准模式 / PTC 模式 / 创造模式 三个卡片都带红色
+「加载失败」徽章，只有「极简模式」正常。tooltip 显示各自的行在等一个运行时服务：
+
+```
+standard:  tool-bash (@deepseek-ai/dsh-tool-bash): waiting for shell
+ptc:       workflow-ptc (@deepseek-ai/dsh-workflow-ptc): waiting for ptcRuntime
+cordis:    tool-workflow (@deepseek-ai/dsh-tool-workflow): waiting for workflowEngine
+```
+
+**根因**：上一轮「裁剪运行时冗余」把 `@deepseek-ai/dsh-sandbox-windows-acl` 当成
+「Windows 专用、Linux 不使用」删掉了。但 `dsh-sandbox-local` 在**顶层静态 import** 它：
+
+```js
+// dsh-sandbox-local/lib/index.js:9
+import { AclWriteGrant, assertTempRootOutsideWorkspace, ... }
+  from "@deepseek-ai/dsh-sandbox-windows-acl";
+```
+
+ESM 的静态 import 无法按平台条件化，Linux 上同样会被求值。包一缺失：
+
+```
+sandbox (@deepseek-ai/dsh-sandbox-local): failed to import:
+  Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@deepseek-ai/dsh-sandbox-windows-acl'
+bash-sandbox (@deepseek-ai/dsh-bash-sandbox): pending (waiting for service: sandbox)
+permission (@deepseek-ai/dsh-permission-presets): pending (waiting for service: shell)
+ptc-runtime (@deepseek-ai/dsh-ptc-runtime-node): pending (waiting for service: sandbox)
+```
+
+`sandbox` 服务加载失败 → `shell` / `ptcRuntime` / `workflowEngine` 全部缺失 →
+预设挂载后审计出 pending 行 → 被判定为 broken。
+「极简模式」不含依赖这些服务的插件，因此独善其身 —— 与症状完全吻合。
+
+**对照实验**（同一环境，只切换该包是否存在）：
+
+| | standard | ptc | minimal | cordis |
+|---|---|---|---|---|
+| 移除该包 | `waiting for shell` | `waiting for shell` | 正常 | `waiting for shell` |
+| 装回该包 | 正常 | 正常 | 正常 | 正常 |
+
+**修复**：
+1. `trim-app-tree.sh` 不再删除该包，并写明原因。
+2. `swap-native-linux.sh` 增加**自动补装**：若该包缺失，按 `dsh-sandbox-local` 的
+   版本号从 npm 取回（实测自动装上 `0.2.1-rc.2`，与 app 版本对齐）。
+3. `trim-app-tree.sh` 末尾增加**静态 import 完整性自检**：解析所有
+   `@deepseek-ai` 包的顶层静态 import，核对目标是否仍可解析，缺失则非零退出。
+   自检在本次修复后的树上通过（107 个目标全部可解析），
+   故意删掉 `dsh-shell` 时能立即报出缺失及其被谁引用。
+
+代价：该包 72 KB（压缩后几乎不占体积）。
+
 ### 新增：`swap-native-linux.sh`（双架构平台替换）
 
 把 darwin 原生包替换为对应的 Linux 包（x64 / arm64）。应用按平台 `require.resolve`，

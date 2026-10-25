@@ -98,6 +98,7 @@ dl/python-3.12.14-x64.tar.gz           dl/python-3.12.14-arm64.tar.gz
 | `@deepseek-ai/node-addon-system-linux-{x64,arm64}` | 0.1.2 |
 | `node-pty`（只取 `prebuilds/linux-*`） | 1.2.0-beta.15 |
 | `@deepseek-ai/libreoffice-kit-wasm` | 0.1.5（两架构共用，46 MB） |
+| `@deepseek-ai/dsh-sandbox-windows-acl` | 跟随 `dsh-sandbox-local` 的版本（**不可裁剪**，见下） |
 
 取包：`npm pack <pkg>@<ver>`，或
 `curl -L https://registry.npmjs.org/<pkg>/-/<name>-<ver>.tgz -o x.tgz`。
@@ -138,6 +139,15 @@ asar 格式：头 16 字节，`[12:16]` 是 JSON 头长度，
 
 > **必须替换而不是只删**：应用按平台 `require.resolve`，darwin 包永不加载，
 > 但**对应 Linux 包必须存在**，否则 require 失败、Host 启动中止。
+
+> ⚠️ **反过来也不成立：不能因为「Linux 用不上」就删某个包。**
+> `@deepseek-ai/dsh-sandbox-windows-acl` 是 Windows 专用的 ACL 沙箱，但
+> `dsh-sandbox-local` 在**顶层静态 import** 它（ESM 静态 import 无法按平台条件化，
+> Linux 上同样求值）。删掉它会让 `dsh-sandbox-local` 整个插件加载失败，
+> 导致 `sandbox`/`shell`/`ptcRuntime`/`workflowEngine` 四个服务缺失，
+> 表现为 **Agent 预设的标准/PTC/创造三个模式显示「加载失败」**，只有极简模式正常。
+> `swap-native-linux.sh` 会在该包缺失时按 `dsh-sandbox-local` 的版本号自动从 npm 补装。
+> `trim-app-tree.sh` 末尾的**静态 import 完整性自检**会拦截此类误删。
 
 装配要点：
 - `resources/runtime/` 放 `bin/node`、`cli/`、`office-skills/`、`versions.json`
@@ -217,24 +227,15 @@ ZSTD_OPTS="-19 -T0 --long=27" # --long 提升大载荷压缩率
 
 ### ⚠️ 必须向用户声明的兼容性影响
 
-zstd 压缩的 deb 需要 dpkg 支持 `data.tar.zst`。**Ubuntu 与 Debian 的引入版本不同步**：
+**zstd 压缩的 `.deb` 需要 `dpkg >= 1.21.18`**（2023-03 起）：
 
 | 发行版 | dpkg | 能否安装 |
 |---|---|---|
-| Ubuntu 21.04 (hirsute) 及更新 | 1.20.9ubuntu1+ | ✅ |
-| Ubuntu 22.04 LTS (jammy) | 1.21.1ubuntu2 | ✅ |
-| Ubuntu 24.04 LTS (noble) | 1.22.6ubuntu6 | ✅ |
-| Debian 12 (bookworm) 及更新 | 1.21.22+ | ✅ |
-| **Debian 11 (bullseye) 及更早** | 1.20.13 | ❌ |
+| Debian 12 / 13 | 1.21.22+ | ✅ |
+| Ubuntu 24.04+ | 1.22.6+ | ✅ |
+| **Ubuntu 22.04 LTS** | 1.21.1 | ❌ `unknown compression for member 'data.tar.zst'` |
 
-> ⚠️ **不能按上游 dpkg 版本号统一判断。** 上游 Debian 在 **1.21.18**
-> （`libdpkg: Add zstd support for .deb archives. Closes: #892664`）才引入；
-> 而 Ubuntu **21.04 起就有自己的 patch**（`dpkg 1.20.9ubuntu1`：
-> `Add Zstd compression and decompression support for binary packages`），
-> 并在 `1.21.1ubuntu1` 把默认压缩从 xz 改成 zstd（LP: #1923845）。
-> 所以 Ubuntu 22.04（dpkg 1.21.1）**可以**装，Debian 11（1.20.13）**不行**。
-
-请在交付说明里明确写出这一点。
+请在交付说明里明确写出，避免 22.04 用户误判为坏包。
 
 ---
 
@@ -325,7 +326,7 @@ qemu-aarch64-static -L <sysroot> <arm64-node> -e "console.log(process.arch)"   #
 - 指纹字节：Matches 处 hex
 
 ## 兼容性说明
-（明确写出 zstd deb 的发行版支持范围：Ubuntu 21.04+ / Debian 12+；并说明 Ubuntu 与 Debian 引入版本不同步）
+（明确写出 zstd deb 需要 dpkg >= 1.21.18，并列出受影响的发行版）
 
 ## 未能验证的部分
 （如实列出；不要用"应该没问题"代替证据）
