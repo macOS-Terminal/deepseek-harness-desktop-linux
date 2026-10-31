@@ -1,7 +1,8 @@
 # DeepSeek Harness — Linux 移植产物
 
-由官方 **macOS arm64** 安装包（`DeepSeek Harness 0.2.1-rc.2.dmg`）中的应用载荷重新打包为 Linux 版本。
-上游应用：`@deepseek-ai/dsh-desktop 0.2.1-rc.2`。
+由官方 **macOS arm64** 安装包（`dsh-latest-macos-arm64.dmg`，上游版本 `0.2.1-rc.5`）中的应用载荷重新打包为 Linux 版本。
+（上一批为 `0.2.1-rc.2`；本轮随上游 rc.5 重建，两个 Linux 修复均已包含。）
+上游应用：`@deepseek-ai/dsh-desktop 0.2.1-rc.5`。
 
 覆盖 **x86_64** 与 **aarch64** 两种架构，各 **4 种**分发格式，共 **8 个产物**。
 全部格式统一使用 **zstd** 压缩。
@@ -12,19 +13,19 @@
 
 | 文件 | 大小 | Electron | 适用发行版 |
 |---|---|---|---|
-| `DeepSeek-Harness-0.2.1-rc.2-x86_64.AppImage` | 287.5 MB | 内置 44.7.0 | 免安装，通用 |
-| `deepseek-harness_0.2.1-rc.2_amd64.bundled.deb` | 258.7 MB | 内置 44.7.0 | Debian 12+ / Ubuntu 21.04+ |
-| `deepseek-harness-0.2.1-0.rc2.x86_64.rpm` | 273.8 MB | 内置 44.7.0 | Fedora 31+ / openSUSE Leap 15.3+ |
-| `deepseek-harness-desktop-0.2.1_rc.2-1-x86_64.pkg.tar.zst` | 169.6 MB | **依赖系统** | Arch Linux |
+| `DeepSeek-Harness-0.2.1-rc.5-x86_64.AppImage` | 287.5 MB | 内置 44.7.0 | 免安装，通用 |
+| `deepseek-harness_0.2.1-rc.5_amd64.bundled.deb` | 258.8 MB | 内置 44.7.0 | Debian 12+ / Ubuntu 21.04+ |
+| `deepseek-harness-0.2.1-0.rc5.x86_64.rpm` | 273.8 MB | 内置 44.7.0 | Fedora 31+ / openSUSE Leap 15.3+ |
+| `deepseek-harness-desktop-0.2.1_rc.5-1-x86_64.pkg.tar.zst` | 169.6 MB | **依赖系统** | Arch Linux |
 
 ### aarch64 (arm64)
 
 | 文件 | 大小 | Electron | 适用发行版 |
 |---|---|---|---|
-| `DeepSeek-Harness-0.2.1-rc.2-aarch64.AppImage` | 282.0 MB | 内置 44.7.0 | 免安装，通用 |
-| `deepseek-harness_0.2.1-rc.2_arm64.bundled.deb` | 252.0 MB | 内置 44.7.0 | Debian 12+ / Ubuntu 21.04+ |
-| `deepseek-harness-0.2.1-0.rc2.aarch64.rpm` | 268.2 MB | 内置 44.7.0 | Fedora 31+ / openSUSE Leap 15.3+ |
-| `deepseek-harness-desktop-0.2.1_rc.2-1-aarch64.pkg.tar.zst` | 163.3 MB | **依赖系统** | Arch Linux |
+| `DeepSeek-Harness-0.2.1-rc.5-aarch64.AppImage` | 282.0 MB | 内置 44.7.0 | 免安装，通用 |
+| `deepseek-harness_0.2.1-rc.5_arm64.bundled.deb` | 252.1 MB | 内置 44.7.0 | Debian 12+ / Ubuntu 21.04+ |
+| `deepseek-harness-0.2.1-0.rc5.aarch64.rpm` | 268.4 MB | 内置 44.7.0 | Fedora 31+ / openSUSE Leap 15.3+ |
+| `deepseek-harness-desktop-0.2.1_rc.5-1-aarch64.pkg.tar.zst` | 163.4 MB | **依赖系统** | Arch Linux |
 
 > **只提供 `bundled.deb`。** 不再有 `system.deb`：Debian/Ubuntu 官方仓库没有 electron 包，
 > 该变体在目标系统上无法直接安装。
@@ -86,17 +87,17 @@ bsdtar -tf *.pkg.tar.zst | head -1
 
 ```bash
 # AppImage（免安装）
-chmod +x DeepSeek-Harness-0.2.1-rc.2-x86_64.AppImage
-./DeepSeek-Harness-0.2.1-rc.2-x86_64.AppImage
+chmod +x DeepSeek-Harness-0.2.1-rc.5-x86_64.AppImage
+./DeepSeek-Harness-0.2.1-rc.5-x86_64.AppImage
 
 # Arch Linux（pacman 自动安装 electron 元包 → electron44）
-sudo pacman -U deepseek-harness-desktop-0.2.1_rc.2-1-x86_64.pkg.tar.zst
+sudo pacman -U deepseek-harness-desktop-0.2.1_rc.5-1-x86_64.pkg.tar.zst
 
 # Debian / Ubuntu
-sudo apt install ./deepseek-harness_0.2.1-rc.2_amd64.bundled.deb
+sudo apt install ./deepseek-harness_0.2.1-rc.5_amd64.bundled.deb
 
 # Fedora / openSUSE
-sudo dnf install ./deepseek-harness-0.2.1-0.rc2.x86_64.rpm
+sudo dnf install ./deepseek-harness-0.2.1-0.rc5.x86_64.rpm
 ```
 
 安装后从应用菜单启动「**DeepSeek Harness Desktop**」，或执行 `deepseek-harness`。

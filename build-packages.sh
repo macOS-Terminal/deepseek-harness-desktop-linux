@@ -11,32 +11,36 @@
 set -euo pipefail
 B="$(cd "$(dirname "$0")" && pwd)"
 ARCH="${1:?用法: build-packages.sh <x64|arm64>}"
-VER="0.2.1-rc.2"                     # upstream version (macOS dmg 0.2.1-rc.2)
-VER_PKG="0.2.1_rc.2"
-
-# 统一的压缩设置：四种格式（deb / rpm / pkg.tar / AppImage）全部使用 zstd。
-# 选择 zstd 的理由：体积接近 xz -9e，但解压快 3-5 倍，安装体验明显更好。
-# 注意：zstd 压缩的 deb 需要 dpkg >= 1.21.18（Debian 12+ / Ubuntu 24.04+）。
-ZSTD_LEVEL=19                 # 与 xz -9e 体积接近；-22 收益不足 2% 但慢一倍
-ZSTD_OPTS="-19 -T0 --long=27" # --long 提升大载荷压缩率
-
-# rpm 的 Version/Release 需与上游一致：0.2.1-rc.2 -> Version 0.2.1 / Release 0.rc2
-RPM_VERSION="${VER%%-*}"          # 0.2.1
-RPM_RELEASE_RAW="${VER#*-}"       # rc.2
-RPM_RELEASE="0.${RPM_RELEASE_RAW//./}"  # 0.rc2（rpm 不接受 rc.2 里的点）
-RPMVER="${RPM_VERSION}-${RPM_RELEASE}.${RPMARCH}"
 
 case "$ARCH" in
   x64)   TREE=out-x64;   DEBARCH=amd64;   PKGARCH=x86_64;  RPMARCH=x86_64;  AIARCH=x86_64 ;;
   arm64) TREE=out-arm64; DEBARCH=arm64;   PKGARCH=aarch64; RPMARCH=aarch64; AIARCH=aarch64 ;;
-  *) echo "未知架构: $ARCH" >&2; exit 1 ;;
+  *) echo "未知架构: $ARCH（应为 x64 或 arm64）" >&2; exit 1 ;;
 esac
-
 SRC="$B/$TREE"
+
+# 上游版本号：优先取构建树里 runtime.json 的 desktopVersion（应用载荷的真实版本），
+# 环境变量 DSH_VER 可显式覆盖。之前硬编码在脚本里，上游升版后忘了改就会打错包名
+# —— rc.5 的构建就发生过一次（产物叫 rc.5 而仓库脚本仍写 rc.2）。
+RUNTIME_JSON="$SRC/resources/runtime/primary-runtime/runtime.json"
+if [ -n "${DSH_VER:-}" ]; then
+  VER="$DSH_VER"
+elif [ -f "$RUNTIME_JSON" ]; then
+  VER=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('desktopVersion',''))" "$RUNTIME_JSON" 2>/dev/null || true)
+fi
+[ -n "${VER:-}" ] || { echo "无法确定上游版本：$RUNTIME_JSON 缺失或无 desktopVersion（可用 DSH_VER=x.y.z 覆盖）" >&2; exit 1; }
+VER_PKG="${VER/-/_}"   # 0.2.1-rc.5 -> 0.2.1_rc.5（与历史产物命名一致）
+
 WORK="/tmp/dsh-build-$ARCH"          # tmpfs: real POSIX permissions, writable
 OUT="$B/dist"
 rm -rf "$WORK"; mkdir -p "$OUT" "$WORK"
 say() { printf '\n== %s ==\n' "$*"; }
+
+# rpm 的 Version/Release 需与上游一致：0.2.1-rc.5 -> Version 0.2.1 / Release 0.rc5
+RPM_VERSION="${VER%%-*}"          # 0.2.1
+RPM_RELEASE_RAW="${VER#*-}"       # rc.5
+RPM_RELEASE="0.${RPM_RELEASE_RAW//./}"  # 0.rc5（rpm 不接受 rc.5 里的点）
+RPMVER="${RPM_VERSION}-${RPM_RELEASE}"   # 0.2.1-0.rc5（文件名里再拼架构）
 
 # Restore sane modes: NTFS reports 0777 for everything, so infer from content.
 # 精简运行时冗余（详见 trim-app-tree.sh）。每次打包复制后调用，

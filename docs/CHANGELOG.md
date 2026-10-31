@@ -5,6 +5,42 @@
 
 ---
 
+## [3.2.0] — 2026-10-31 — 随上游重建 `0.2.1-rc.5`
+
+上游从 `0.2.1-rc.2` 升级到 **0.2.1-rc.5**，整套 Linux 移植随之重建。
+产 x86_64 与 aarch64 各 4 种格式，共 8 个产物。
+
+### 上游变化
+
+- 应用包 `@deepseek-ai/dsh-desktop` **0.2.1-rc.2 → 0.2.1-rc.5**
+- 全部原生模块版本随上游对齐（`dsh-sandbox-windows-acl`、`dsh-sandbox-local` 等均为 rc.5）
+- 运行时不变：Electron 44.7.0 / Node 24.21.0 / Python 3.12.14 / pnpm 11.28.5
+- 补丁全部适用：`patch-main`（14 项）、`patch-titlebar`、`patch-mac-chrome`、
+  `patch-fingerprint`（符号定位，x64 `Matches@0x1808f → b8010000` ✓）
+
+### 两个 Linux 修复的回归验证（全部通过）
+
+| 修复 | 验证方式 | 结果 |
+|---|---|---|
+| **Agent 预设** | 加载真实 desktop profile 调 `agentPresets.list()` | standard/ptc/minimal/cordis 全部 `broken=(无)` |
+| **托盘图标** | `nativeImage.createFromPath(resources/tray.png)` 后构造 `Tray` | `isEmpty=false`、32×32，图标可见 |
+
+### 结构校验
+
+- `sha256sum -c SHA256SUMS.txt`：**8/8 通过**
+- 四格式压缩：deb `data.tar.zst`、rpm `zstd(19)`、pkg `Zstandard`、AppImage squashfs `compression=6`
+- 架构纯度：x64 包无 arm64 残留、arm64 包无 x64 残留（各抽查 60 个 `.node`）
+- AppImage `--appimage-extract` 正常
+
+### 产物体积
+
+| 格式 | x86_64 | aarch64 |
+|---|---|---|
+| AppImage | 287.5 MB | 282.0 MB |
+| bundled.deb | 258.8 MB | 252.1 MB |
+| rpm | 273.8 MB | 268.4 MB |
+| pkg.tar.zst | 169.6 MB | 163.4 MB |
+
 ## [3.1.0] — 2026-10-25 — 修复 Agent 预设与托盘图标
 
 上游从 `0.2.0-rc.2` 升级到 **0.2.1-rc.2**。产出 x86_64 与 aarch64 各 4 种格式，共 8 个产物
