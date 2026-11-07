@@ -76,11 +76,16 @@ find "$NM" -name '*:com.apple.provenance' -delete 2>/dev/null || true
 # 它虽是 Windows 专用的 ACL 沙箱，但 ESM 静态 import 无法按平台条件化，
 # Linux 上同样会被求值，因此必须保留。缺失时从 npm 取回。
 ACL="$NM/@deepseek-ai/dsh-sandbox-windows-acl"
-if [ ! -d "$ACL" ]; then
-  echo "  · 补装 dsh-sandbox-windows-acl（dsh-sandbox-local 静态依赖，不可裁剪）"
-  ver=$(python3 -c "
+want_acl_ver=$(python3 -c "
 import json
-print(json.load(open('$NM/@deepseek-ai/dsh-sandbox-local/package.json'))['version'])" 2>/dev/null)
+print(json.load(open('$NM/@deepseek-ai/dsh-sandbox-local/package.json'))['version'])" 2>/dev/null || true)
+have_acl_ver=$(python3 -c "
+import json
+print(json.load(open('$ACL/package.json'))['version'])" 2>/dev/null || true)
+if [ ! -d "$ACL" ] || { [ -n "$want_acl_ver" ] && [ "$have_acl_ver" != "$want_acl_ver" ]; }; then
+  echo "  · 补装 dsh-sandbox-windows-acl（目标版本 ${want_acl_ver:-未知}，当前 ${have_acl_ver:-缺失}）"
+  ver="$want_acl_ver"
+  rm -rf "$ACL"
   tmp="$(mktemp -d)"
   if curl -sL --max-time 120 -o "$tmp/a.tgz" \
       "https://registry.npmjs.org/@deepseek-ai/dsh-sandbox-windows-acl/-/dsh-sandbox-windows-acl-${ver}.tgz" \

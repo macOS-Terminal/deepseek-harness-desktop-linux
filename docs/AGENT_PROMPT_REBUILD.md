@@ -10,7 +10,7 @@ DeepSeek 官方只发布 macOS / Windows 版桌面客户端。本项目把官方
 应用载荷重新打包成 Linux 安装包。官方代码里的 Linux 分支基本是空实现，
 因此移植 = **用补丁补齐那些空分支** + 替换平台相关的原生模块与运行时。
 
-**上游版本**：`0.2.1-rc.2`（dmg 内目录名 `DeepSeek Harness 0.2.1-rc.2-arm64`）
+**上游版本**：`0.2.2-rc.1`（dmg 内目录名 `DeepSeek Harness 0.2.2-rc.1-arm64`）
 
 **你手上已具备**：官方 macOS dmg（已下载好）、可联网的 Linux 环境、本补丁仓库地址。
 **你需要做**：拉仓库 → 解包 dmg → 换平台包 → 打补丁 → 构建 → 逐包验证。
@@ -68,7 +68,7 @@ README.zh.md                      完整中文教程 ← **先读这个**
 ```bash
 7z x -oothers/dmg others/dsh-latest-macos-arm64.dmg
 ```
-解出的目录名带版本号，如 `DeepSeek Harness 0.2.1-rc.2-arm64`。
+解出的目录名带版本号，如 `DeepSeek Harness 0.2.2-rc.1-arm64`。
 若实际版本不同，**以实际为准**并同步调整下面各处版本号。
 
 ### 3.2 Electron **44.7.0**
@@ -76,7 +76,7 @@ README.zh.md                      完整中文教程 ← **先读这个**
 dl/electron-44.7.0-linux-x64.zip
 dl/electron-44.7.0-linux-arm64.zip
 ```
-> ⚠️ 必须 ≥ 44.4.5。Electron 44.0.0 有 Linux 托盘回归缺陷。0.2.1-rc.2 内置 44.7.0。
+> ⚠️ 必须 ≥ 44.4.5。Electron 44.0.0 有 Linux 托盘回归缺陷。0.2.2-rc.1 内置 44.7.0。
 
 ### 3.3 Node 与 Python
 ```
@@ -88,7 +88,7 @@ dl/python-3.12.14-x64.tar.gz           dl/python-3.12.14-arm64.tar.gz
 
 ### 3.4 Linux 原生模块（两架构各一套，放 `dl/linux-x64` / `dl/linux-arm64`）
 
-版本必须与 0.2.1-rc.2 对齐：
+版本必须与 0.2.2-rc.1 对齐：
 
 | npm 包 | 版本 |
 |---|---|
@@ -133,10 +133,9 @@ asar 格式：头 16 字节，`[12:16]` 是 JSON 头长度，
 
 ### 4.3 替换原生模块
 ```bash
-# <app-tree> 指含 dsh/node_modules 的那层：
-#   .../Resources/app.asar.unpacked/dsh
-./swap-native-linux.sh <app-tree> dl/linux-x64   x64
-./swap-native-linux.sh <app-tree> dl/linux-arm64 arm64
+# <app-tree> 指含 dsh/node_modules 的那层（如 out-x64/resources/app）：
+./swap-native-linux.sh out-x64/resources/app   dl/linux-x64   x64
+./swap-native-linux.sh out-arm64/resources/app dl/linux-arm64 arm64
 ```
 脚本会：删 darwin 包 → 装 Linux 包 → 清理 `*:com.apple.provenance` →
 **自动补装缺失的 `dsh-sandbox-windows-acl`** → 校验 `.node`/`.so` 架构（不符即非零退出）。

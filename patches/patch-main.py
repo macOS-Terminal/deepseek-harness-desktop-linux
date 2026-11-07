@@ -3,7 +3,8 @@
 
 Usage: patch-main.py <path-to-resources/app/lib/main.js>
 
-Patches (all verified against the 0.2.0-rc.2 bundle):
+Patches (originally written against 0.2.0-rc.2; verified against 0.2.1-rc.5
+and 0.2.2-rc.1):
   1. platform allowlist: accept linux (was win32/darwin only -> threw on Linux)
   2. x-client-platform: report desktop-linux instead of falling through to mac
   3. DesktopPlatformView platform argument: pass linux through
@@ -62,11 +63,29 @@ def main() -> int:
     )
 
     # 3) platform view argument ---------------------------------------------
-    sub(
-        'process.platform === "win32" ? "win32" : "darwin");',
-        'process.platform === "win32" ? "win32" : process.platform === "linux" ? "linux" : "darwin");',
-        'PlatformView 平台参数透传',
-    )
+    # Up to 0.2.1 the platform was the last DesktopPlatformView argument
+    # (`... "darwin");`); 0.2.2 appends an overlay-blocked callback after it
+    # (`... "darwin", (owner) => ...);`). Exactly one occurrence across both
+    # forms must exist, so a missing or duplicated anchor still fails loudly.
+    pv_old = 'new DesktopPlatformView('
+    pv_arg = 'process.platform === "win32" ? "win32" : "darwin"'
+    pv_new = 'process.platform === "win32" ? "win32" : process.platform === "linux" ? "linux" : "darwin"'
+    pv_forms = [pv_arg + ');', pv_arg + ', (owner) =>']
+    pv_counts = [src.count(f) for f in pv_forms]
+    if sum(pv_counts) != 1 or src.count(pv_old) != 1:
+        missing.append(
+            f'PlatformView 平台参数透传 (found {pv_counts[0]}+{pv_counts[1]}, expected 1; '
+            f'DesktopPlatformView calls {src.count(pv_old)})'
+        )
+    else:
+        form = pv_forms[0] if pv_counts[0] else pv_forms[1]
+        call = src.index(pv_old)
+        line_end = src.find('\n', call)
+        if src.find(form, call, line_end) == -1:
+            missing.append('PlatformView 平台参数透传 (anchor not inside the DesktopPlatformView call)')
+        else:
+            src = src.replace(form, pv_new + form[len(pv_arg):])
+            done.append('PlatformView 平台参数透传')
 
     # 4) + 5) helpers --------------------------------------------------------
     anchor = None

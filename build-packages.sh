@@ -29,7 +29,9 @@ elif [ -f "$RUNTIME_JSON" ]; then
   VER=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('desktopVersion',''))" "$RUNTIME_JSON" 2>/dev/null || true)
 fi
 [ -n "${VER:-}" ] || { echo "无法确定上游版本：$RUNTIME_JSON 缺失或无 desktopVersion（可用 DSH_VER=x.y.z 覆盖）" >&2; exit 1; }
-VER_PKG="${VER/-/_}"   # 0.2.1-rc.5 -> 0.2.1_rc.5（与历史产物命名一致）
+VER_PKG="${VER/-/_}"   # 0.2.2-rc.1 -> 0.2.2_rc.1（与历史产物命名一致）
+ELECTRON_VER="$(tr -d '[:space:]' < "$SRC/version" 2>/dev/null || true)"
+[ -n "$ELECTRON_VER" ] || ELECTRON_VER="44.7.0"
 
 WORK="/tmp/dsh-build-$ARCH"          # tmpfs: real POSIX permissions, writable
 OUT="$B/dist"
@@ -249,7 +251,7 @@ Requires:       libsecret, mesa-libgbm, alsa-lib, libdrm, libxkbcommon,
 Requires:       libXcomposite, libXdamage, libXfixes, libXrandr, cups-libs, libxcb
 %description
 DeepSeek Harness desktop application repackaged for Linux.
-This build bundles its own Electron 44.4.5 runtime.
+This build bundles its own Electron ${ELECTRON_VER} runtime.
 %prep
 %build
 %install

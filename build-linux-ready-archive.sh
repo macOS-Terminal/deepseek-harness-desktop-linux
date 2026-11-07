@@ -10,8 +10,8 @@
 # 新增：对应架构的 Linux 原生包
 #
 # 用法: build-linux-ready-archive.sh <x64|arm64> <输出文件>
-#   ./build-linux-ready-archive.sh x64   dist/dsh-0.2.1-rc.2-linux-x86_64.tar.xz
-#   ./build-linux-ready-archive.sh arm64 dist/dsh-0.2.1-rc.2-linux-aarch64.tar.xz
+#   ./build-linux-ready-archive.sh x64   dist/dsh-0.2.2-rc.1-linux-x86_64.tar.xz
+#   ./build-linux-ready-archive.sh arm64 dist/dsh-0.2.2-rc.1-linux-aarch64.tar.xz
 set -euo pipefail
 
 ARCH="${1:?用法: build-linux-ready-archive.sh <x64|arm64> <out.tar.xz>}"
@@ -24,10 +24,15 @@ case "$ARCH" in
   *) echo "未知架构: $ARCH（应为 x64 或 arm64）" >&2; exit 1 ;;
 esac
 
-SRC="$ROOT/others/dmg-new/DeepSeek Harness 0.2.1-rc.2-arm64"
+if [ -n "${DSH_DMG_DIR:-}" ]; then
+  SRC="$DSH_DMG_DIR"
+else
+  SRC="$(find "$ROOT/others" -maxdepth 2 -type d -name 'DeepSeek Harness *-arm64' 2>/dev/null | sort -V | tail -1)"
+fi
 DL="$ROOT/$DLDIR"
-[ -d "$SRC" ] || { echo "找不到源目录: $SRC" >&2; exit 1; }
+[ -n "$SRC" ] && [ -d "$SRC" ] || { echo "找不到 dmg 解包源目录（可通过 DSH_DMG_DIR 指定）" >&2; exit 1; }
 [ -d "$DL" ]  || { echo "找不到平台包目录: $DL" >&2; exit 1; }
+DMG_NAME="$(basename "$SRC")"
 
 # 在 tmpfs 暂存：工作区若在 NTFS 则不支持符号链接，而 app 树含 symlink
 # （如 python3 -> python3.12），直接就地改写会破坏它们。
@@ -36,7 +41,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 echo "== 复制源树到 tmpfs ($WORK) =="
 cp -a "$SRC" "$WORK/"
-APP="$WORK/DeepSeek Harness 0.2.1-rc.2-arm64/DeepSeek Harness.app/Contents"
+APP="$WORK/$DMG_NAME/DeepSeek Harness.app/Contents"
 NM="$APP/Resources/app.asar.unpacked/dsh/node_modules"
 [ -d "$NM" ] || { echo "找不到 node_modules: $NM" >&2; exit 1; }
 echo "  $(du -sh "$WORK" | cut -f1)"
@@ -47,7 +52,7 @@ find "$WORK" -name '*.lproj' -type d -prune -exec rm -rf {} + 2>/dev/null || tru
 find "$WORK" -name '_CodeSignature' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 
 echo "== 替换原生包为 Linux $ARCH =="
-"$ROOT/swap-native-linux.sh" "$WORK/DeepSeek Harness 0.2.1-rc.2-arm64/DeepSeek Harness.app/Contents/Resources/app.asar.unpacked/dsh" "$DL" "$ARCH" \
+"$ROOT/swap-native-linux.sh" "$APP/Resources/app.asar.unpacked" "$DL" "$ARCH" \
   || { echo "平台替换失败" >&2; exit 1; }
 
 echo "== 压缩到 $OUT =="

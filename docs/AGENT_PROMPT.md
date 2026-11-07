@@ -10,7 +10,7 @@ DeepSeek 官方只发布 macOS / Windows 版桌面客户端。本项目的目标
 里的应用载荷重新打包成 **Linux** 安装包。官方代码里的 Linux 分支基本是空实现，
 因此移植 = **用补丁补齐那些空分支** + 替换平台相关的原生模块与运行时。
 
-**你手上已具备**：官方 macOS dmg（`0.2.1-rc.2`，已下载好）、可联网的 Linux 环境、
+**你手上已具备**：官方 macOS dmg（`0.2.2-rc.1`，已下载好）、可联网的 Linux 环境、
 本补丁仓库的地址。
 **你需要做**：拉仓库 → 解包 dmg → 换平台包 → 打补丁 → 构建 → 逐包验证。
 
@@ -65,15 +65,15 @@ README.zh.md                      完整中文教程 ← **先读这个**
 ```bash
 7z x -oothers/dmg others/dsh-latest-macos-arm64.dmg
 ```
-解出的目录名带版本号，如 `DeepSeek Harness 0.2.1-rc.2-arm64`。
-> 若实际版本与文档所写 `0.2.1-rc.2` 不同，以实际为准，并核对下面各处的版本号。
+解出的目录名带版本号，如 `DeepSeek Harness 0.2.2-rc.1-arm64`。
+> 若实际版本与文档所写 `0.2.2-rc.1` 不同，以实际为准，并核对下面各处的版本号。
 
 ### 3.2 Electron **44.7.0**
 ```
 dl/electron-44.7.0-linux-x64.zip
 dl/electron-44.7.0-linux-arm64.zip
 ```
-> ⚠️ 必须 ≥ 44.4.5。Electron 44.0.0 有 Linux 托盘回归缺陷。0.2.1-rc.2 内置 44.7.0。
+> ⚠️ 必须 ≥ 44.4.5。Electron 44.0.0 有 Linux 托盘回归缺陷。0.2.2-rc.1 内置 44.7.0。
 
 ### 3.3 Node 与 Python
 ```
@@ -85,7 +85,7 @@ dl/python-3.12.14-x64.tar.gz           dl/python-3.12.14-arm64.tar.gz
 
 ### 3.4 Linux 原生模块（两架构各一套，放 `dl/linux-x64` / `dl/linux-arm64`）
 
-版本必须与 0.2.1-rc.2 对齐：
+版本必须与 0.2.2-rc.1 对齐：
 
 | npm 包 | 版本 |
 |---|---|

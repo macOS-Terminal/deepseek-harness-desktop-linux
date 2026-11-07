@@ -1,10 +1,23 @@
 #!/bin/bash
-# 逐个解包并实际启动 5 种 x64 格式，确认应用能正常起来（web 监听）。
+# 逐个解包并实际启动 4 种 x64 产物格式，确认应用能正常起来（web 监听）。
 # 每种格式之间等待 19387 端口释放，避免上一次实例残留导致 EADDRINUSE 误判。
-D=/mnt/60CC4C56CC4C289C/Projects/dsh-desktop-linux/dist
+set -uo pipefail
+B="$(cd "$(dirname "$0")" && pwd)"
+D="${1:-$B/dist}"
 T=/tmp/launch-verify
 rm -rf "$T"; mkdir -p "$T"
 pass=0; fail=0
+
+APPIMAGE="$(find "$D" -maxdepth 1 -name 'DeepSeek-Harness-*-x86_64.AppImage' | sort -V | tail -1)"
+DEB="$(find "$D" -maxdepth 1 -name 'deepseek-harness_*_amd64.bundled.deb' | sort -V | tail -1)"
+RPM="$(find "$D" -maxdepth 1 -name 'deepseek-harness-*.x86_64.rpm' | sort -V | tail -1)"
+PKGTAR="$(find "$D" -maxdepth 1 -name 'deepseek-harness-desktop-*-x86_64.pkg.tar.zst' | sort -V | tail -1)"
+
+echo "验证目录: $D"
+echo "  AppImage   : ${APPIMAGE:-未找到}"
+echo "  bundled.deb: ${DEB:-未找到}"
+echo "  rpm        : ${RPM:-未找到}"
+echo "  pkg.tar.zst: ${PKGTAR:-未找到}"
 
 waitport() {
   for _ in $(seq 1 30); do
@@ -32,34 +45,35 @@ run() { # $1=label $2=binary $3=home
   check "$1" "$T/$1.log"
 }
 
-echo '######## 1/5 AppImage ########'
-run AppImage "$D/DeepSeek-Harness-0.2.0-rc.2-x86_64.AppImage" "$T/h1"
+echo '######## 1/4 AppImage ########'
+run AppImage "$APPIMAGE" "$T/h1"
 rm -rf "$T/h1"
 
-echo '######## 2/5 bundled.deb ########'
-mkdir -p "$T/b" && (cd "$T/b" && ar x "$D/deepseek-harness_0.2.0-rc.2_amd64.bundled.deb" data.tar.xz && tar -xJf data.tar.xz)
+echo '######## 2/4 bundled.deb ########'
+mkdir -p "$T/b" && (
+  cd "$T/b"
+  ar x "$DEB"
+  if [ -f data.tar.zst ]; then
+    tar --zstd -xf data.tar.zst
+  else
+    tar -xJf data.tar.xz
+  fi
+)
 run bundled.deb "$T/b/usr/lib/deepseek-harness/deepseek-harness" "$T/h2"
 rm -rf "$T/b" "$T/h2"
 
-echo '######## 3/5 system.deb ########'
-mkdir -p "$T/s" && (cd "$T/s" && ar x "$D/deepseek-harness_0.2.0-rc.2_amd64.system.deb" data.tar.xz && tar -xJf data.tar.xz)
-sed "s|APP_DIR=/usr/lib/deepseek-harness/resources|APP_DIR=$T/s/usr/lib/deepseek-harness/resources|" "$T/s/usr/bin/deepseek-harness" > "$T/sl.sh"
-chmod 755 "$T/sl.sh"
-run system.deb "$T/sl.sh" "$T/h3"
-rm -rf "$T/s" "$T/h3" "$T/sl.sh"
+echo '######## 3/4 rpm ########'
+mkdir -p "$T/r" && (cd "$T/r" && bsdtar -xf "$RPM" 2>/dev/null)
+run rpm "$T/r/usr/lib/deepseek-harness/deepseek-harness" "$T/h3"
+rm -rf "$T/r" "$T/h3"
 
-echo '######## 4/5 rpm ########'
-mkdir -p "$T/r" && (cd "$T/r" && rpm2cpio "$D/deepseek-harness-0.2.0-0.rc2.x86_64.rpm" | cpio -idm --quiet 2>/dev/null)
-run rpm "$T/r/usr/lib/deepseek-harness/deepseek-harness" "$T/h4"
-rm -rf "$T/r" "$T/h4"
-
-echo '######## 5/5 pkg.tar.zst ########'
-mkdir -p "$T/p" && (cd "$T/p" && bsdtar -xf "$D/deepseek-harness-desktop-0.2.0_rc.2-1-x86_64.pkg.tar.zst" 2>/dev/null)
+echo '######## 4/4 pkg.tar.zst ########'
+mkdir -p "$T/p" && (cd "$T/p" && bsdtar -xf "$PKGTAR" 2>/dev/null)
 sed "s|APP_DIR=/usr/lib/deepseek-harness/resources|APP_DIR=$T/p/usr/lib/deepseek-harness/resources|" "$T/p/usr/bin/deepseek-harness" > "$T/pl.sh"
 chmod 755 "$T/pl.sh"
-run pkg.tar.zst "$T/pl.sh" "$T/h5"
-rm -rf "$T/p" "$T/h5" "$T/pl.sh"
+run pkg.tar.zst "$T/pl.sh" "$T/h4"
+rm -rf "$T/p" "$T/h4" "$T/pl.sh"
 
 echo
-echo "===== x64 启动实测: $pass/5 通过, $fail 失败 ====="
+echo "===== x64 启动实测: $pass/4 通过, $fail 失败 ====="
 rm -rf "$T"

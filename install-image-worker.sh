@@ -14,7 +14,10 @@ set -euo pipefail
 TREE="${1:?用法: install-image-worker.sh <tree> <arch>}"
 ARCH="${2:?用法: install-image-worker.sh <tree> <arch>}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-SRC="$ROOT/$TREE/resources"
+case "$TREE" in
+  /*) SRC="$TREE/resources" ;;
+  *)  SRC="$ROOT/$TREE/resources" ;;
+esac
 NM="$SRC/app/dsh/node_modules"
 WORKER="$SRC/image-worker"
 
@@ -59,12 +62,13 @@ if [ -d "$NM/sharp" ] && [ ! -d "$NM/.sharp-native-backup/sharp" ]; then
   mkdir -p "$NM/.sharp-native-backup"
   mv "$NM/sharp" "$NM/.sharp-native-backup/sharp"
 fi
+SHARP_VER="$(python3 -c "import json; print(json.load(open('$W/sharp/package.json'))['version'])" 2>/dev/null || echo 0.35.5)"
 FACADE="$NM/sharp"
 mkdir -p "$FACADE/dist"
-cat > "$FACADE/package.json" <<'JSON'
+cat > "$FACADE/package.json" <<JSON
 {
   "name": "sharp",
-  "version": "0.35.4",
+  "version": "$SHARP_VER",
   "description": "Out-of-process Sharp facade: keeps libvips out of the Electron process on Linux.",
   "main": "./dist/index.cjs",
   "type": "commonjs",
