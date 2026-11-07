@@ -34,9 +34,14 @@ ELECTRON_VER="$(tr -d '[:space:]' < "$SRC/version" 2>/dev/null || true)"
 [ -n "$ELECTRON_VER" ] || ELECTRON_VER="44.7.0"
 
 WORK="/tmp/dsh-build-$ARCH"          # tmpfs: real POSIX permissions, writable
-OUT="$B/dist"
+OUT="${DSH_OUT:-$B/dist}"            # DSH_OUT 可指向单独目录，避免多轮构建产物混在一起
 rm -rf "$WORK"; mkdir -p "$OUT" "$WORK"
 say() { printf '\n== %s ==\n' "$*"; }
+
+# 压缩参数。之前靠外部环境变量传入，脚本单独运行时 set -u 直接报
+# "ZSTD_OPTS: unbound variable"（deb / pkg.tar.zst 两处都用它），这里给出默认值。
+ZSTD_OPTS="${ZSTD_OPTS:--19 -T0 --long=27}"
+ZSTD_LEVEL="${ZSTD_LEVEL:-19}"
 
 # rpm 的 Version/Release 需与上游一致：0.2.1-rc.5 -> Version 0.2.1 / Release 0.rc5
 RPM_VERSION="${VER%%-*}"          # 0.2.1
@@ -131,20 +136,22 @@ cat > "$META/launcher" <<'LAUNCH'
 set -e
 APP_DIR=/usr/lib/deepseek-harness/resources
 find_electron() {
-  for c in electron electron44 electron43 electron42 electron41 electron40 electron39 nodejs-electron; do
+  # electron45 优先：这是本项目配套发布的运行时包（/usr/lib/electron45）。
+  # 上游只认 43 / 44 / 45 三套指纹，45 是当前主线，其余按可用性依次回退，
+  # 保证「装了发行版 electron 的用户」也不会因为少装 electron45 而启动失败。
+  for c in electron45 electron electron44 electron43 electron42 electron41 electron40 electron39 nodejs-electron; do
     command -v "$c" >/dev/null 2>&1 && { command -v "$c"; return 0; }
   done
-  for p in /usr/lib/electron44/electron /usr/lib/electron/electron \
-           /usr/lib64/electron/electron /usr/lib/nodejs-electron/electron \
-           /opt/electron/electron; do
+  for p in /usr/lib/electron45/electron /usr/lib/electron/electron \
+           /usr/lib/electron44/electron /usr/lib64/electron/electron \
+           /usr/lib/nodejs-electron/electron /opt/electron/electron; do
     [ -x "$p" ] && { echo "$p"; return 0; }
   done
   return 1
 }
 ELECTRON_BIN=$(find_electron) || {
   echo "deepseek-harness: 未找到 Electron 运行时。" >&2
-  echo "Arch: 安装 electron；Fedora/openSUSE: 安装 nodejs-electron 或 electron。" >&2
-  echo "Debian/Ubuntu 官方仓库无 electron 包，请安装第三方 electron 包或改用 bundled 版本。" >&2
+  echo "请先安装 electron45 包（本项目随附），或发行版的 electron / nodejs-electron。" >&2
   exit 1
 }
 export DSH_DESKTOP_FORCE_PACKAGED=1
@@ -312,6 +319,43 @@ build_pkgtar() {
   trim_tree "$r/usr/lib/deepseek-harness"
   rm -f "$r/usr/lib/deepseek-harness/resources/app-update.yml"
   cp "$META/launcher" "$r/usr/bin/deepseek-harness"
+  # 运行时自带的 CLI 入口是 macOS 专用：上游把 Electron 主程序写成
+  # `$resources/../MacOS/DeepSeek Harness`、把脚本写成 `app.asar/dsh/...`，
+  # 在 Linux 树上必然 "not found"。系统 Electron 构建下改写成按
+  # electron45 → electron → nodejs-electron 查找（与 /usr/bin 启动器同序）。
+  local CLI="$r/usr/lib/deepseek-harness/resources/runtime/cli/bin/dsh"
+  if [ -f "$CLI" ]; then
+    cat > "$CLI" <<'CLIEOF'
+#!/bin/sh
+# Run the installed CLI without changing the invoking shell or working directory.
+set -e
+launcher=$0
+while [ -L "$launcher" ]; do
+  directory=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd -P)
+  target=$(readlink "$launcher")
+  case "$target" in
+    /*) launcher=$target ;;
+    *) launcher=$directory/$target ;;
+  esac
+done
+# runtime/ 的上一级就是 resources/（macOS 版这里算的是 Contents/Resources）
+runtime=$(CDPATH= cd -- "$(dirname -- "$launcher")/../.." && pwd -P)
+cli="$runtime/../app/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js"
+# 系统 Electron 构建不自带运行时，运行时按优先级从系统里找
+find_electron() {
+  for c in electron45 electron nodejs-electron; do
+    command -v "$c" >/dev/null 2>&1 && { command -v "$c"; return 0; }
+  done
+  for p in /usr/lib/electron45/electron /usr/lib/electron/electron; do
+    [ -x "$p" ] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+ELECTRON=$(find_electron) || { echo "dsh: 未找到 Electron 运行时（需要 electron45）" >&2; exit 1; }
+ELECTRON_RUN_AS_NODE=1 exec "$ELECTRON" --expose-internals "$cli" "$@"
+CLIEOF
+    chmod 755 "$CLI"
+  fi
   chmod 755 "$r/usr/bin/deepseek-harness"
   cp "$B/icons/deepseek-harness.desktop" "$r/usr/share/applications/"
   for s in 16 24 32 48 64 128 256 512; do
@@ -330,7 +374,9 @@ packager = DeepSeek Harness Linux port
 size = $size
 arch = $PKGARCH
 license = MIT
-depend = electron
+depend = electron45
+optdepend = electron: 已装发行版 electron 时可替代 electron45
+optdepend = nodejs-electron: Fedora/openSUSE 的 Electron 运行时可替代 electron45
 EOF
   cat > "$r/.INSTALL" <<'EOF'
 post_install() {
@@ -374,22 +420,32 @@ build_appimage() {
   done
   printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/deepseek-harness" "$@"\n' > "$A/AppRun"
   chmod 755 "$A/AppRun"
-  # squashfs 的 zstd 用 1M 块 + level 19；-Xdict-size 提高跨块去重效果。
+  # squashfs 的 zstd 用 1M 块 + level 19。
+  # -Xdict-size 只对 xz 有效（zstd 压缩器只有 -Xcompression-level），传了会报
+  # "Unrecognised compressor option -Xdict-size"；-processors 也不接受 0（要求 ≥1）。
+  # 两者任一出现都会让 mksquashfs 直接退出，因此输出必须落盘，不能丢进 /dev/null。
+  rm -f "$WORK/app.squashfs"
   "$B/tools/usr/bin/mksquashfs" "$A" "$WORK/app.squashfs" -root-owned -noappend \
-    -comp zstd -Xcompression-level "$ZSTD_LEVEL" -Xdict-size 100% -b 1M -processors 0 >/dev/null 2>&1
+    -comp zstd -Xcompression-level "$ZSTD_LEVEL" -b 1M -processors "$(nproc)" >>"$WORK/mksquashfs.log" 2>&1 \
+    || { echo "  ✗ mksquashfs 失败，见 $WORK/mksquashfs.log" >&2; tail -5 "$WORK/mksquashfs.log" >&2; return 1; }
   cat "$B/tools/runtime-$AIARCH" "$WORK/app.squashfs" > "$OUT/DeepSeek-Harness-${VER}-${AIARCH}.AppImage"
   chmod 755 "$OUT/DeepSeek-Harness-${VER}-${AIARCH}.AppImage"
   echo "  ✓ AppImage: $(du -h "$OUT/DeepSeek-Harness-${VER}-${AIARCH}.AppImage" | cut -f1)"
   rm -rf "$A" "$WORK/app.squashfs"; sync
 }
 
-say "构建 $ARCH 全部格式 (工作区: $WORK)"
+say "构建 $ARCH (工作区: $WORK)"
+# FORMATS 可只构建部分格式（逗号分隔：deb,pkgtar,rpm,appimage），默认全部。
+# 只为验证某个格式（例如只重打 pkg.tar.zst）时，不必再跑一遍 1.3 GB 的 squashfs。
+FORMATS="${FORMATS:-deb,pkgtar,rpm,appimage}"
+want() { case ",$FORMATS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
 # Only the bundled deb is shipped: the system variant depends on a
 # distribution Electron package, and Debian/Ubuntu ship none, so it could not be
 # installed there without a third-party source. The bundled build is
 # self-contained and is what the release notes point users at.
-build_deb
-build_pkgtar
-build_rpm
-build_appimage
-say "完成 $ARCH"
+want deb      && build_deb
+want pkgtar   && build_pkgtar
+want rpm      && build_rpm
+want appimage && build_appimage
+say "完成 $ARCH（格式: $FORMATS）"

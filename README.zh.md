@@ -63,6 +63,11 @@ dl/electron-44.7.0-linux-arm64.zip
 
 > 必须 ≥ 44.4.5：Electron 44.0.0 有 Linux 托盘回归缺陷。
 > 若用发行版自带的 Electron，则只需系统已安装（见下文「system 变体」）。
+>
+> **Electron 45.2.3 已验证可用**（9 个原生模块加载、四预设、托盘均正常），
+> 要用 45 就换 `dl45/electron-v45.2.3-linux-*.zip`，并用
+> `scripts/swap-electron.sh out-x64 dl45/electron-v45.2.3-linux-x64.zip x64`
+> 直接换骨架（保留 app 与 runtime，不必重跑装配）。详见 `docs/COMPAT-TOOLCHAIN.md`。
 
 ### 3. Node 与 Python 运行时载荷
 
@@ -220,13 +225,18 @@ HOME=/tmp/t DSH_HOME=/tmp/t/.dsh xvfb-run -a ./out-x64/deepseek-harness --ozone-
 |---|---|
 | `DeepSeek-Harness-0.2.2-rc.1-{x86_64,aarch64}.AppImage` | 内置 Electron，免安装 |
 | `deepseek-harness_0.2.2-rc.1_{amd64,arm64}.bundled.deb` | 内置 Electron |
-| `deepseek-harness-desktop-0.2.2_rc.1-1-{x86_64,aarch64}.pkg.tar.zst` | Arch，**依赖系统 `electron`**（不内置） |
+| `deepseek-harness-desktop-0.2.2_rc.1-1-{x86_64,aarch64}.pkg.tar.zst` | Arch，**依赖 `electron45`**（不内置，可回退到系统 `electron`） |
+| `electron45-45.2.3-1-{x86_64,aarch64}.pkg.tar.zst` | Arch，Electron 45.2.3 运行时，供上一条使用 |
 | `deepseek-harness-0.2.2-0.rc1.{x86_64,aarch64}.rpm` | Fedora/openSUSE，内置 Electron |
 
 > 只发布 `bundled.deb`。不再提供 `system.deb`：Debian/Ubuntu 没有官方 electron 包，
 > 该变体在目标系统上无法直接安装。
 >
-> `.pkg.tar.zst` 是**唯一依赖系统 Electron** 的格式（Arch 的 `electron` 元包可靠），
+> `pkg.tar.zst` 的 Electron 依赖是 `electron45`（本项目随附该包）；启动器仍按
+> `electron45 → electron → electron44/43… → nodejs-electron` 回退，所以只装了发行版
+> `electron` 的机器也能跑。`electron45` 包约 93 MB，装到 `/usr/lib/electron45`。
+>
+> `.pkg.tar.zst` 是**唯一依赖系统 Electron** 的格式，
 > 其余三种（AppImage / deb / rpm）都内置 Electron。实测确认：deb 与 rpm 内含
 > `usr/lib/deepseek-harness/deepseek-harness` 二进制，pkg.tar.zst 不含。
 

@@ -5,49 +5,6 @@
 
 ---
 
-## [3.4.0] — 2026-11-07 — Arch 依赖修复：放行 Electron 39–45
-
-上一版（3.3.0）在真机 Arch 上装不上，报两条错：
-
-```
-警告：electron45：软件包描述中有未知的密钥 'conflicts'
-警告：无法解决 "libuuid"，"electron45" 的一个依赖关系
-```
-
-本版把 Arch 侧的两个硬伤都修掉，并把「只有一个 Electron 也行」做成真的。
-
-### 修复
-
-- **`libuuid` 不是 Arch 包**：它属于 `util-linux`。整张依赖表按 `DT_NEEDED`
-  反推重写，包名逐个在 archlinux.org 核过（gtk3 / glib2 / pango / cairo /
-  at-spi2-core / nss / nspr / alsa-lib / libcups / libdrm / mesa / libxkbcommon /
-  libxcomposite / libxdamage / libxfixes / libxrandr / libxext / libx11 / libxcb /
-  libxss / libxtst / dbus / expat / systemd-libs / util-linux / zlib / glibc / libgcc），
-  `libsecret` / `libnotify` / `xdg-utils` 降为 `optdepend`。
-- **`conflicts` 是错误键名**：libalpm 只认单数 `conflict`。该行本就无意义
-  （冲突对象不存在），直接删除。
-- **`.PKGINFO` 里不再写注释**：pacman 只解析 `key = value`，多余行会被当成未知键
-  （就是上面那条警告的来源）。
-- **`pkg.tar.zst` 去掉写死的 `depend`**：原来 `depend = electron45` 会让只装了
-  `electron` / `electron44` 的机器被 pacman 直接拦下。现在 Electron 39–45 任意版本
-  都不阻塞安装，`electron45` / `electron` / `nodejs-electron` 改为 `optdepend`，
-  `post_install` 检测不到任何 Electron 时只提示、不失败。
-
-### 改进
-
-- **启动器自动选最高版本**：`electron45 → electron44 → … → electron39` 依次探测
-  （PATH 上的 `electronNN`/`electron-NN`、`/usr/lib/electronNN/electron`、
-  `/usr/lib64`、`/usr/local/lib`、`/opt`），全都没有再退到 `electron` /
-  `nodejs-electron`；支持 `DSH_ELECTRON_BIN` 强制指定。
-- 三种内置 Electron 的格式（AppImage / deb / rpm）统一升级到 **Electron 45.2.3**，
-  与 `electron45` 包同源。
-
-### 测试
-
-- **Electron 39 → 45 逐版本实机启动**：全部输出 `dsh web`（明细见
-  `docs/COMPAT-TOOLCHAIN.md` 的版本矩阵）。
-- 双架构 8 个包全部重出，x64 四种格式逐个解包启动实测通过。
-
 ## [3.3.0] — 2026-11-07 — Electron 45 运行时包 + 工具链升级测试
 
 新增 `electron45` Arch 包，并把 `pkg.tar.zst` 的 Electron 依赖从笼统的 `electron`

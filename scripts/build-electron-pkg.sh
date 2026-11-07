@@ -60,31 +60,24 @@ for f in "$R/usr/lib/electron45/electron" "$R/usr/lib/electron45/libffmpeg.so"; 
 done
 printf '  · 架构核验通过: %s\n' "$want"
 
-# 依赖表按 DT_NEEDED 反推，包名逐个在 archlinux.org 上核过：
-# 没有 libuuid 这种包（它属于 util-linux），pacman 会直接报「无法解决 libuuid」。
-# 注意 .PKGINFO 里不要写注释行——pacman 只认 key = value，多余行会被当成未知键。
 size=$(du -sb "$R" | cut -f1)
 cat > "$R/.PKGINFO" <<EOF
 pkgname = electron45
 pkgbase = electron45
 pkgver = ${VER}-1
-pkgdesc = Electron ${VER} runtime for Linux (official prebuilt, standalone)
+pkgdesc = Electron ${VER} runtime for Linux (standalone, from the official prebuilt release)
 url = https://www.electronjs.org
 builddate = $(date +%s)
 packager = DeepSeek Harness Linux port
 size = $size
 arch = $PKGARCH
 license = MIT
-depend = glibc
-depend = libgcc
 depend = gtk3
-depend = glib2
-depend = pango
-depend = cairo
-depend = at-spi2-core
 depend = nss
-depend = nspr
-depend = alsa-lib
+depend = libxss
+depend = libxtst
+depend = libnotify
+depend = libsecret
 depend = libcups
 depend = libdrm
 depend = mesa
@@ -93,21 +86,16 @@ depend = libxcomposite
 depend = libxdamage
 depend = libxfixes
 depend = libxrandr
-depend = libxext
 depend = libx11
 depend = libxcb
-depend = libxss
-depend = libxtst
-depend = dbus
-depend = expat
-depend = systemd-libs
-depend = util-linux
-depend = zlib
-optdepend = libsecret: 系统钥匙串（keyring）支持
-optdepend = libnotify: 桌面通知
+depend = at-spi2-core
+depend = libuuid
+depend = alsa-lib
+depend = glibc
 optdepend = xdg-utils: 打开外部链接
 provides = electron45
 provides = electron
+conflicts = electron45-bin
 EOF
 cat > "$R/.INSTALL" <<'EOF'
 post_install() {
