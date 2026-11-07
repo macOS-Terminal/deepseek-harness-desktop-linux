@@ -5,6 +5,90 @@
 
 ---
 
+## [3.4.0] — 2026-11-07 — Arch 依赖修复：放行 Electron 39–45
+
+上一版（3.3.0）在真机 Arch 上装不上，报两条错：
+
+```
+警告：electron45：软件包描述中有未知的密钥 'conflicts'
+警告：无法解决 "libuuid"，"electron45" 的一个依赖关系
+```
+
+本版把 Arch 侧的两个硬伤都修掉，并把「只有一个 Electron 也行」做成真的。
+
+### 修复
+
+- **`libuuid` 不是 Arch 包**：它属于 `util-linux`。整张依赖表按 `DT_NEEDED`
+  反推重写，包名逐个在 archlinux.org 核过（gtk3 / glib2 / pango / cairo /
+  at-spi2-core / nss / nspr / alsa-lib / libcups / libdrm / mesa / libxkbcommon /
+  libxcomposite / libxdamage / libxfixes / libxrandr / libxext / libx11 / libxcb /
+  libxss / libxtst / dbus / expat / systemd-libs / util-linux / zlib / glibc / libgcc），
+  `libsecret` / `libnotify` / `xdg-utils` 降为 `optdepend`。
+- **`conflicts` 是错误键名**：libalpm 只认单数 `conflict`。该行本就无意义
+  （冲突对象不存在），直接删除。
+- **`.PKGINFO` 里不再写注释**：pacman 只解析 `key = value`，多余行会被当成未知键
+  （就是上面那条警告的来源）。
+- **`pkg.tar.zst` 去掉写死的 `depend`**：原来 `depend = electron45` 会让只装了
+  `electron` / `electron44` 的机器被 pacman 直接拦下。现在 Electron 39–45 任意版本
+  都不阻塞安装，`electron45` / `electron` / `nodejs-electron` 改为 `optdepend`，
+  `post_install` 检测不到任何 Electron 时只提示、不失败。
+
+### 改进
+
+- **启动器自动选最高版本**：`electron45 → electron44 → … → electron39` 依次探测
+  （PATH 上的 `electronNN`/`electron-NN`、`/usr/lib/electronNN/electron`、
+  `/usr/lib64`、`/usr/local/lib`、`/opt`），全都没有再退到 `electron` /
+  `nodejs-electron`；支持 `DSH_ELECTRON_BIN` 强制指定。
+- 三种内置 Electron 的格式（AppImage / deb / rpm）统一升级到 **Electron 45.2.3**，
+  与 `electron45` 包同源。
+
+### 测试
+
+- **Electron 39 → 45 逐版本实机启动**：全部输出 `dsh web`（明细见
+  `docs/COMPAT-TOOLCHAIN.md` 的版本矩阵）。
+- 双架构 8 个包全部重出，x64 四种格式逐个解包启动实测通过。
+
+## [3.3.0] — 2026-11-07 — Electron 45 运行时包 + 工具链升级测试
+
+新增 `electron45` Arch 包，并把 `pkg.tar.zst` 的 Electron 依赖从笼统的 `electron`
+改为 `electron45`（带完整回退链）。同轮做了 pnpm / npm / Node / Python 的升级实测，
+结论见 `docs/COMPAT-TOOLCHAIN.md`。
+
+### 新增
+
+- `scripts/build-electron-pkg.sh`：把 Electron 官方 linux 预编译包打成 Arch 包
+  `electron45`（`/usr/lib/electron45` + `/usr/bin/electron45`，`chrome-sandbox` 4755，
+  `provides = electron45, electron`）。x86_64 93 MB / aarch64 92 MB。
+- `scripts/swap-electron.sh`：只替换应用树的 Electron 骨架（保留 `resources/app`、
+  `resources/runtime`、托盘图标），换运行时不必重跑装配。
+- `docs/COMPAT-TOOLCHAIN.md`：Electron 45.2.3 / Node 26.13.0 / pnpm 12.18.0 /
+  npm 12.2.2 / Python 3.15.2 的逐项实测记录。
+
+### 修复
+
+- **pkg.tar.zst 不认 electron45**：`.PKGINFO` 原写 `depend = electron`，启动器搜索链
+  也没有 `electron45`，装了 45 运行时用不上。现改为 `depend = electron45`，
+  搜索顺序 `electron45 → electron → electron44/43/42/41/40/39 → nodejs-electron`，
+  `/usr/lib/electron45/electron` 提到路径列表首位；发行版 Electron 仍可通过
+  `optdepend` 满足。
+- **CLI 入口在 Linux 上必然失效**：`runtime/cli/bin/dsh` 是 macOS 专用
+  （`$resources/../MacOS/DeepSeek Harness`、`app.asar/dsh/...`）。`pkg.tar.zst`
+  打包时重写为按系统查找 Electron + `app/dsh` 直连，实测 `dsh --version` 输出
+  `0.2.2-rc.1`。
+- **`ZSTD_OPTS` / `ZSTD_LEVEL` 未定义**：脚本单独运行在 `set -u` 下直接
+  `unbound variable`（deb、pkg.tar.zst 两处都用到），历史构建靠外部环境变量掩盖。
+  现在脚本内自带默认值。
+- **只能整包构建**：新增 `FORMATS`（`deb,pkgtar,rpm,appimage` 子集）与 `DSH_OUT`
+  （产物目录），验证单个格式不必再跑 1.3 GB 的 AppImage。
+
+### 测试
+
+- Electron 45.2.3：9 个原生模块全部加载（ABI 150 / Node 24.22.2 / V8
+  15.6.75.27-electron.0），四预设 `broken=(无)`，托盘图 32×32 非空。
+- 指纹补丁不需要改：符号定位的 `Matches(...)` 在 45 下仍唯一命中 `@0x1808f`。
+- `pkg.tar.zst` 按真实安装布局（`/usr/lib` + `/usr/bin`）落盘后，GUI 出
+  `dsh web`、CLI 出版本号；移除 `electron45` 只留 `electron` 时启动器自动回退，同样正常。
+
 ## [3.2.0] — 2026-10-31 — 随上游重建 `0.2.1-rc.5`
 
 上游从 `0.2.1-rc.2` 升级到 **0.2.1-rc.5**，整套 Linux 移植随之重建。
