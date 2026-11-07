@@ -178,3 +178,93 @@ numpy/pandas，否则启动即 `ImportError`（site-packages 里是 `.so`，ABI 
 - `electron45` 包只提供运行时，不含 `electron` 的 `/usr/bin/electron` 入口
   （避免与发行版 electron 抢占同名文件）；如果别的包硬依赖 `electron` 可执行文件，
   需要装发行版 electron，两者可以共存（路径不重叠）。
+
+---
+
+# 附：Arch 打包踩坑（3.4.0）
+
+真机（Arch）上第一次 `pacman -U` 直接失败，两条错误都出在 `.PKGINFO` 里：
+
+```
+警告：electron45：软件包描述中有未知的密钥 'conflicts'
+警告：无法解决 "libuuid"，"electron45" 的一个依赖关系
+警告：无法解决 "electron45"，"deepseek-harness-desktop" 的一个依赖关系
+```
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 未知键 `conflicts` | libalpm 只认**单数** `conflict`，写 `conflicts` 会被当成未知键（只是警告，但说明元数据不规范） | 删掉该行（本来也没有冲突对象） |
+| 无法解决 `libuuid` | **Arch 没有 `libuuid` 这个包**，`libuuid.so.1` 由 `util-linux` 提供 | 依赖表按二进制的 `DT_NEEDED` 重推，`libuuid` → `util-linux` |
+| 依赖级联失败 | `electron45` 解析失败 → 依赖它的 `deepseek-harness-desktop` 一起被跳过 | 见下 |
+
+## 依赖表怎么来的
+
+```
+readelf -d /usr/lib/electron45/electron | grep NEEDED
+```
+
+得到 33 个 soname（`libgtk-3.so.0`、`libnss3.so`、`libatk-bridge-2.0.so.0`、`libgbm.so.1`、
+`libudev.so.1`、`libasound.so.2` …），逐个映射成 Arch 包名，并用
+`https://archlinux.org/packages/search/json/?name=<pkg>` 校验存在性——这一步就是为了
+避免再写出 `libuuid` 这种"看起来该有、其实不存在"的名字。
+
+最终 `electron45` 的硬依赖 28 项：`glibc libgcc gtk3 glib2 pango cairo at-spi2-core
+nss nspr alsa-lib libcups libdrm mesa libxkbcommon libxcomposite libxdamage libxfixes
+libxrandr libxext libx11 libxcb libxss libxtst dbus expat systemd-libs util-linux zlib`，
+`libsecret` / `libnotify` / `xdg-utils` 作为 `optdepend`（keyring / 通知 / 外链，
+缺失不影响启动）。
+
+官方 `extra/electron` 其实是**元包**：`depends=(electron44)`，
+`/usr/bin/electron` → `electron44` 的软链。所以"系统里到底装了哪个版本"这件事，
+只能靠启动器自己探测，不能靠依赖声明。
+
+## 为什么 `pkg.tar.zst` 干脆不写 `depend`
+
+需求是「Electron 39–45 有任意一个就行」。pacman 的 `depend` 不支持"或"：
+
+- 写 `depend = electron45` → 只有 `electron44` 的机器被拦下（上一版就是这样）；
+- 写 `depend = electron` → 只有 AUR `electron39` 的机器被拦下（那个包不 provide `electron`）；
+- 写 `depend = electron44` → 只有 45 的机器被拦下。
+
+所以硬依赖全部改成 `optdepend`，运行期由启动器解析，启动器找不到时给出可执行的提示，
+`post_install` 也在检测不到任何 Electron 时打印一行提醒（不阻断安装）。
+
+## 启动器：39 → 45 取最高
+
+```
+$DSH_ELECTRON_BIN（显式指定）
+  → PATH 上的 electron45/electron-45 … electron39/electron-39
+  → /usr/lib/electronNN/electron（Arch/AUR 布局）、/usr/lib64、/usr/local/lib、/opt
+  → 通用兜底 electron / nodejs-electron
+```
+
+实测（本机）：`/usr/lib/electron45` 与 `/usr/lib/electron44` 并存时选 45
+（44 的包装脚本一次都没被调用）；把 45 移走后回退到 44。
+
+## 版本矩阵：39 → 45 逐版本启动实测
+
+同一棵 0.2.2-rc.1 应用树，只换 Electron 骨架，`xvfb-run` 起 GUI，判定标准是日志里
+出现 `dsh web: http://127.0.0.1:…`（即 host 真正跑起来并监听）。
+
+| Electron | 结果 | 备注 |
+|---|---|---|
+| 39.8.10 | ✅ 启动成功 | |
+| 40.10.6 | ✅ 启动成功 | |
+| 41.10.7 | ✅ 启动成功 | |
+| 42.11.18 | ✅ 启动成功 | |
+| 43.8.7 | ✅ 启动成功 | 指纹门禁原本就接受 43 |
+| 44.10.2 | ✅ 启动成功 | 指纹门禁原本就接受 44 |
+| 45.2.3 | ✅ 启动成功 | 指纹门禁原本只接受 45.0.0-alpha.6 |
+
+7/7 全通过。关键点在 `patches/patch-fingerprint.py`：它通过 ELF 符号表定位
+`Matches(...)` 并改成无条件返回 true，所以指纹白名单里有没有这个版本都不影响
+（39–42 完全不在白名单里，照样能起）。
+
+复现命令：
+
+```bash
+cp -al out-x64 /tmp/tree-ver          # 硬链接副本，几乎不占空间
+scripts/swap-electron.sh /tmp/tree-ver electron-v44.10.2-linux-x64.zip x64
+HOME=/tmp/h DSH_HOME=/tmp/h/.dsh xvfb-run -a /tmp/tree-ver/deepseek-harness \
+  --no-sandbox --ozone-platform=x11 --disable-gpu
+```

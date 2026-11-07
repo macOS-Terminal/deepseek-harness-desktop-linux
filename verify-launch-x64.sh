@@ -3,7 +3,8 @@
 # 每种格式之间等待 19387 端口释放，避免上一次实例残留导致 EADDRINUSE 误判。
 set -uo pipefail
 B="$(cd "$(dirname "$0")" && pwd)"
-D="${1:-$B/dist}"
+# 必须转成绝对路径：脚本内部会 cd 到解包目录，相对路径会失效（曾导致 4/4 全判失败）
+D="$(cd "${1:-$B/dist}" 2>/dev/null && pwd)" || { echo "目录不存在: ${1:-}" >&2; exit 1; }
 T=/tmp/launch-verify
 rm -rf "$T"; mkdir -p "$T"
 pass=0; fail=0
@@ -41,12 +42,22 @@ check() { # $1=label $2=logfile
 run() { # $1=label $2=binary $3=home
   waitport
   mkdir -p "$3/.dsh"
-  HOME="$3" DSH_HOME="$3/.dsh" timeout 70 xvfb-run -a "$2" --ozone-platform=x11 --disable-gpu >"$T/$1.log" 2>&1
+  # --no-sandbox：以 root 运行时 Chromium 会直接 FATAL 退出（容器里默认就是 root），
+  # 没有这个参数四种格式会全部被判失败。
+  HOME="$3" DSH_HOME="$3/.dsh" timeout 70 xvfb-run -a "$2" --no-sandbox --ozone-platform=x11 --disable-gpu >"$T/$1.log" 2>&1
   check "$1" "$T/$1.log"
 }
 
 echo '######## 1/4 AppImage ########'
-run AppImage "$APPIMAGE" "$T/h1"
+# 容器里通常没有 FUSE，直接执行会 "Cannot mount AppImage"。此时退回
+# --appimage-extract，解出来的 squashfs-root 就是同一套载荷，等价验证。
+if [ -n "$APPIMAGE" ] && [ ! -e /dev/fuse ]; then
+  echo "  · 无 /dev/fuse，改用 --appimage-extract"
+  ( cd "$T" && chmod +x "$APPIMAGE" && "$APPIMAGE" --appimage-extract >/dev/null 2>&1 )
+  run AppImage "$T/squashfs-root/AppRun" "$T/h1"
+else
+  run AppImage "$APPIMAGE" "$T/h1"
+fi
 rm -rf "$T/h1"
 
 echo '######## 2/4 bundled.deb ########'

@@ -225,16 +225,18 @@ HOME=/tmp/t DSH_HOME=/tmp/t/.dsh xvfb-run -a ./out-x64/deepseek-harness --ozone-
 |---|---|
 | `DeepSeek-Harness-0.2.2-rc.1-{x86_64,aarch64}.AppImage` | 内置 Electron，免安装 |
 | `deepseek-harness_0.2.2-rc.1_{amd64,arm64}.bundled.deb` | 内置 Electron |
-| `deepseek-harness-desktop-0.2.2_rc.1-1-{x86_64,aarch64}.pkg.tar.zst` | Arch，**依赖 `electron45`**（不内置，可回退到系统 `electron`） |
+| `deepseek-harness-desktop-0.2.2_rc.1-1-{x86_64,aarch64}.pkg.tar.zst` | Arch，**不内置 Electron**，用系统的 39–45 任意版本 |
 | `electron45-45.2.3-1-{x86_64,aarch64}.pkg.tar.zst` | Arch，Electron 45.2.3 运行时，供上一条使用 |
 | `deepseek-harness-0.2.2-0.rc1.{x86_64,aarch64}.rpm` | Fedora/openSUSE，内置 Electron |
 
 > 只发布 `bundled.deb`。不再提供 `system.deb`：Debian/Ubuntu 没有官方 electron 包，
 > 该变体在目标系统上无法直接安装。
 >
-> `pkg.tar.zst` 的 Electron 依赖是 `electron45`（本项目随附该包）；启动器仍按
-> `electron45 → electron → electron44/43… → nodejs-electron` 回退，所以只装了发行版
-> `electron` 的机器也能跑。`electron45` 包约 93 MB，装到 `/usr/lib/electron45`。
+> `pkg.tar.zst` **不写死 `depend`**：Electron 39–45 任意一个都能用，写死会让
+> 「只有 electron44」的机器被 pacman 直接拦下（实际踩过）。启动器按
+> `electron45 → electron44 → … → electron39` 自动挑**最高**版本，
+> 再用 `electron` / `nodejs-electron` 兜底；也可用 `DSH_ELECTRON_BIN=…` 指定。
+> 随附的 `electron45` 包约 93 MB，装到 `/usr/lib/electron45`。
 >
 > `.pkg.tar.zst` 是**唯一依赖系统 Electron** 的格式，
 > 其余三种（AppImage / deb / rpm）都内置 Electron。实测确认：deb 与 rpm 内含

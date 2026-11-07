@@ -133,25 +133,49 @@ done
 cat > "$META/launcher" <<'LAUNCH'
 #!/bin/sh
 # DeepSeek Harness launcher (system-wide Electron build).
+#
+# 运行时由系统提供，版本范围 Electron 39–45，自动挑**最高**的那个：
+#   ① $DSH_ELECTRON_BIN 显式指定
+#   ② PATH 上的 electron45 … electron39（含 electron-45 这类连字符命名）
+#   ③ 标准安装路径 /usr/lib/electronXX/electron（Arch/AUR 布局）、lib64、/opt
+#   ④ 通用入口 electron / nodejs-electron 兜底（Arch 的 electron 元包、
+#      Fedora/openSUSE 的 nodejs-electron）
+# 上游 node-addon-require-builtin 只认 43/44/45 三套指纹，移植补丁已把它改成
+# 无条件放行，所以 39–42 同样能起；实测 39–45 全部可启动（见 docs/COMPAT-TOOLCHAIN.md）。
 set -e
 APP_DIR=/usr/lib/deepseek-harness/resources
+VERSIONS="45 44 43 42 41 40 39"
+
 find_electron() {
-  # electron45 优先：这是本项目配套发布的运行时包（/usr/lib/electron45）。
-  # 上游只认 43 / 44 / 45 三套指纹，45 是当前主线，其余按可用性依次回退，
-  # 保证「装了发行版 electron 的用户」也不会因为少装 electron45 而启动失败。
-  for c in electron45 electron electron44 electron43 electron42 electron41 electron40 electron39 nodejs-electron; do
-    command -v "$c" >/dev/null 2>&1 && { command -v "$c"; return 0; }
+  if [ -n "${DSH_ELECTRON_BIN:-}" ] && [ -x "$DSH_ELECTRON_BIN" ]; then
+    echo "$DSH_ELECTRON_BIN"; return 0
+  fi
+  for v in $VERSIONS; do
+    for c in "electron$v" "electron-$v"; do
+      if command -v "$c" >/dev/null 2>&1; then command -v "$c"; return 0; fi
+    done
   done
-  for p in /usr/lib/electron45/electron /usr/lib/electron/electron \
-           /usr/lib/electron44/electron /usr/lib64/electron/electron \
+  for v in $VERSIONS; do
+    for p in "/usr/lib/electron$v/electron" "/usr/lib64/electron$v/electron" \
+             "/usr/local/lib/electron$v/electron" "/opt/electron$v/electron"; do
+      if [ -x "$p" ]; then echo "$p"; return 0; fi
+    done
+  done
+  for c in electron nodejs-electron; do
+    if command -v "$c" >/dev/null 2>&1; then command -v "$c"; return 0; fi
+  done
+  for p in /usr/lib/electron/electron /usr/lib64/electron/electron \
            /usr/lib/nodejs-electron/electron /opt/electron/electron; do
-    [ -x "$p" ] && { echo "$p"; return 0; }
+    if [ -x "$p" ]; then echo "$p"; return 0; fi
   done
   return 1
 }
+
 ELECTRON_BIN=$(find_electron) || {
-  echo "deepseek-harness: 未找到 Electron 运行时。" >&2
-  echo "请先安装 electron45 包（本项目随附），或发行版的 electron / nodejs-electron。" >&2
+  echo "deepseek-harness: 未找到 Electron 运行时（需要 39–45 中任意一个）。" >&2
+  echo "  Arch/AUR:  pacman -S electron  或安装 electron39…electron45 之一" >&2
+  echo "  Fedora/openSUSE: 安装 nodejs-electron" >&2
+  echo "  也可用 DSH_ELECTRON_BIN=/path/to/electron 显式指定。" >&2
   exit 1
 }
 export DSH_DESKTOP_FORCE_PACKAGED=1
@@ -374,14 +398,27 @@ packager = DeepSeek Harness Linux port
 size = $size
 arch = $PKGARCH
 license = MIT
-depend = electron45
-optdepend = electron: 已装发行版 electron 时可替代 electron45
-optdepend = nodejs-electron: Fedora/openSUSE 的 Electron 运行时可替代 electron45
+optdepend = electron45: 本项目随附的 Electron 45 运行时（推荐）
+optdepend = electron: Arch 元包 / 发行版 electron（39–45 任意版本均可）
+optdepend = nodejs-electron: Fedora/openSUSE 的 Electron 运行时
 EOF
   cat > "$r/.INSTALL" <<'EOF'
 post_install() {
   update-desktop-database -q 2>/dev/null || true
   gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+  # Electron 39–45 任意一个即可；没装不拦安装，只提示。
+  found=
+  for v in 45 44 43 42 41 40 39; do
+    if command -v "electron$v" >/dev/null 2>&1 || [ -x "/usr/lib/electron$v/electron" ]; then
+      found=1; break
+    fi
+  done
+  if [ -z "$found" ] && ! command -v electron >/dev/null 2>&1 \
+     && ! command -v nodejs-electron >/dev/null 2>&1; then
+    echo ">>> deepseek-harness 需要 Electron 39–45 中任意一个才能启动；"
+    echo ">>> Arch: pacman -S electron（或装 electron45 / electron39…44），"
+    echo ">>> Fedora/openSUSE: 安装 nodejs-electron。"
+  fi
   if [ -f /usr/lib/deepseek-harness/chrome-sandbox ]; then
     chmod 4755 /usr/lib/deepseek-harness/chrome-sandbox 2>/dev/null || true
   fi
