@@ -1,6 +1,7 @@
 #!/bin/bash
 # 逐个解包并实际启动 4 种 x64 产物格式，确认应用能正常起来（web 监听）。
-# 每种格式之间等待 19387 端口释放，避免上一次实例残留导致 EADDRINUSE 误判。
+# deb/rpm/pkg 均通过包内启动器运行，确保 netlink guard 的 LD_PRELOAD 也被覆盖。
+# 每种格式之间等待 19387 端口释放，避免旧版固定端口实例残留导致 EADDRINUSE 误判。
 set -uo pipefail
 B="$(cd "$(dirname "$0")" && pwd)"
 # 必须转成绝对路径：脚本内部会 cd 到解包目录，相对路径会失效（曾导致 4/4 全判失败）
@@ -70,13 +71,17 @@ mkdir -p "$T/b" && (
     tar -xJf data.tar.xz
   fi
 )
-run bundled.deb "$T/b/usr/lib/deepseek-harness/deepseek-harness" "$T/h2"
-rm -rf "$T/b" "$T/h2"
+sed "s|APP_HOME=/usr/lib/deepseek-harness|APP_HOME=$T/b/usr/lib/deepseek-harness|" "$T/b/usr/bin/deepseek-harness" > "$T/bl.sh"
+chmod 755 "$T/bl.sh"
+run bundled.deb "$T/bl.sh" "$T/h2"
+rm -rf "$T/b" "$T/h2" "$T/bl.sh"
 
 echo '######## 3/4 rpm ########'
 mkdir -p "$T/r" && (cd "$T/r" && bsdtar -xf "$RPM" 2>/dev/null)
-run rpm "$T/r/usr/lib/deepseek-harness/deepseek-harness" "$T/h3"
-rm -rf "$T/r" "$T/h3"
+sed "s|APP_HOME=/usr/lib/deepseek-harness|APP_HOME=$T/r/usr/lib/deepseek-harness|" "$T/r/usr/bin/deepseek-harness" > "$T/rl.sh"
+chmod 755 "$T/rl.sh"
+run rpm "$T/rl.sh" "$T/h3"
+rm -rf "$T/r" "$T/h3" "$T/rl.sh"
 
 echo '######## 4/4 pkg.tar.zst ########'
 mkdir -p "$T/p" && (cd "$T/p" && bsdtar -xf "$PKGTAR" 2>/dev/null)
