@@ -9,7 +9,7 @@
  *   3. every API call the attachment pipeline makes actually works
  *   4. malformed input raises an error instead of crashing the process
  */
-const { readFileSync } = require('node:fs');
+const { existsSync, readFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const { createRequire } = require('node:module');
 
@@ -47,6 +47,23 @@ function sourceImage(script) {
   console.log(`Electron ${process.versions.electron} / Node ${process.versions.node}`);
   check('加载 shim 前本进程无 libvips', mapsHasVips() === false);
 
+  // Reject the native package before requiring it: its entry is also
+  // node_modules/sharp/dist/index.cjs, so a path-only check is a false pass.
+  const facadePackage = JSON.parse(readFileSync(`${APP}/dsh/node_modules/sharp/package.json`, 'utf8'));
+  const isFacade = typeof facadePackage.description === 'string'
+    && facadePackage.description.includes('Out-of-process Sharp facade');
+  const workerReady = [
+    `${RES}/image-worker/client.cjs`,
+    `${RES}/image-worker/worker.cjs`,
+    `${RES}/image-worker/worker-modules/node_modules/sharp/package.json`,
+  ].every(existsSync);
+  check('sharp 包确为隔离 facade', isFacade, facadePackage.description ?? '(无 description)');
+  check('image-worker 载荷完整', workerReady, RES.replace(/^.+?(?=\/resources)/, '…'));
+  if (!isFacade || !workerReady) {
+    console.error('\n❌ 原生 sharp 或缺失的 worker 不能进入图片测试；请先修复打包');
+    process.exit(1);
+  }
+
   // Resolve exactly like the attachment package does.
   const req = createRequire(`${APP}/dsh/node_modules/@deepseek-ai/dsh-attachment-local/lib/index.js`);
   const resolved = req.resolve('sharp');
@@ -58,6 +75,8 @@ function sourceImage(script) {
   const pngAlpha = sourceImage(`s({create:{width:400,height:300,channels:4,background:{r:10,g:200,b:80,alpha:0.5}}}).png().toBuffer().then(b=>process.stdout.write(b))`);
   const webp = sourceImage(`s({create:{width:300,height:200,channels:3,background:{r:200,g:30,b:30}}}).webp({quality:80}).toBuffer().then(b=>process.stdout.write(b))`);
   const gif = sourceImage(`s({create:{width:120,height:120,channels:3,background:{r:0,g:0,b:255}}}).gif().toBuffer().then(b=>process.stdout.write(b))`);
+  const large = sourceImage(`s({create:{width:6000,height:4000,channels:3,background:{r:32,g:96,b:160}}}).jpeg({quality:85}).toBuffer().then(b=>process.stdout.write(b))`);
+  const animatedGif = Buffer.from('R0lGODlhBAAEAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACAAAACwAAAAABAAEAAAICQABCBxIsCCAgAAh+QQBCAABACwAAAAABAAEAIEAAP8AAAAAAAAAAAAICQABCBxIsCCAgAA7', 'base64');
 
   // 1) probeImage path: metadata only
   const md = await sharp(jpeg, { failOn: 'error', limitInputPixels: false }).metadata();
@@ -88,14 +107,30 @@ function sourceImage(script) {
     check(`${label} 可解码`, typeof meta.width === 'number' && meta.width > 0, `${meta.format} ${meta.width}x${meta.height}`);
   }
 
-  // 5) bad input raises instead of crashing
-  let threw = false;
-  try {
-    await sharp(Buffer.from('not an image at all')).metadata();
-  } catch {
-    threw = true;
+  // 5) large input, animation, concurrent requests, and malformed data.
+  const largeOut = await sharp(large, { failOn: 'error', limitInputPixels: false })
+    .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 80 }).toBuffer({ resolveWithObject: true });
+  check('6000x4000 大图归一化', largeOut.info.width === 512 && largeOut.info.height <= 512,
+    `${largeOut.info.width}x${largeOut.info.height}, ${largeOut.data.byteLength} bytes`);
+
+  const animatedMeta = await sharp(animatedGif).metadata();
+  check('动画 GIF 可读取', animatedMeta.format === 'gif' && animatedMeta.pages === 2,
+    `${animatedMeta.width}x${animatedMeta.height}, pages=${animatedMeta.pages}`);
+
+  const concurrent = await Promise.all([jpeg, pngAlpha, webp, gif].map((bytes) => sharp(bytes).metadata()));
+  check('并发 metadata 请求', concurrent.every((meta) => typeof meta.width === 'number' && meta.width > 0),
+    `${concurrent.length} 个请求`);
+
+  for (const [label, bytes] of [['坏数据', Buffer.from('not an image at all')], ['截断 JPEG', jpeg.subarray(0, 100)]]) {
+    let threw = false;
+    try {
+      await sharp(bytes).metadata();
+    } catch {
+      threw = true;
+    }
+    check(`${label}抛错而非崩溃`, threw);
   }
-  check('坏数据抛错而非崩溃', threw);
 
   // 6) the isolation invariant that matters
   check('全程本进程始终无 libvips', mapsHasVips() === false);

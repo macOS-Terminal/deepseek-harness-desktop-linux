@@ -191,6 +191,8 @@ python3 patches/patch-fingerprint.py \
 - 安装替身包，使 `require("sharp")` 走到 out-of-process worker。
 
 ⚠️ 打包前**务必删除** `node_modules/.sharp-native-backup/`，否则会白占体积。
+`build-packages.sh` 会强制重复执行该安装并删除备份；`tests/test-image-worker.sh`
+会连续安装两轮，验证 facade、worker 载荷、大图、动画、并发和异常图片。
 
 ### 6. 安装 netlink 收包失败退避守卫
 
@@ -297,6 +299,7 @@ ZSTD_OPTS="-19 -T0 --long=27"  # --long 提升大载荷压缩率
 ## 四、验证
 
 ```bash
+./tests/test-image-worker.sh  # Sharp 隔离幂等安装与完整图片回归
 ./tests/test-netlink-guard.sh  # seccomp 模拟 EACCES，验证 1/2/4/8/8ms 退避
 ./verify-launch-x64.sh          # 四种格式逐个解包并实际启动
 cd dist && sha256sum -c SHA256SUMS.txt
@@ -339,7 +342,7 @@ qemu-aarch64-static -L <sysroot> out-arm64/resources/runtime/.../node -e "consol
 | `desktop policy: unsupported platform` | `patch-main.py` 没打 |
 | `unsupported Electron runtime fingerprint` | `patch-fingerprint.py` 没打 |
 | 启动即 `EADDRINUSE 127.0.0.1:19387` | 已有一个实例在跑（应用固定用这个端口），先关掉 |
-| 图片一发就整个应用崩 | Sharp 替身包没装好，检查 `resources/image-worker/` |
+| 图片一发就整个应用崩 | 检查 sharp 是否有 `Out-of-process Sharp facade` 标记、`resources/image-worker/` 是否完整；原生包与 facade 的入口路径相同，不能只看路径 |
 | syslog 反复出现 `Failed to recv from netlink socket` | Chromium 收包失败后无退避重试；确认 `resources/netlink-guard/` 存在并从标准启动器启动。紧急诊断可用 `DSH_NETLINK_GUARD=0`，日常不要关闭 |
 | 侧栏折叠后无法展开 / 侧栏右缘缺口 / 文字发灰 | 均因 `backdrop-filter` 放在侧栏元素上（旧版缺陷）。现由独立层 `#dsh-mac-vibrancy` 承担模糊，且插在 `#root` 之前 + `z-index:-1` |
 | 内容区左上角露白、全屏布局不对 | 应用给 `_centerCol` 的 16px 圆角 + 缺全屏规则；已置零圆角并对齐 macOS 全屏（隐藏交通灯、折叠键靠左） |

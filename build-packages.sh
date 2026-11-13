@@ -43,6 +43,12 @@ say() { printf '\n== %s ==\n' "$*"; }
 ZSTD_OPTS="${ZSTD_OPTS:--19 -T0 --long=27}"
 ZSTD_LEVEL="${ZSTD_LEVEL:-19}"
 
+# Sharp 隔离不能只靠文档提醒：3.4.0 曾出现原生 sharp 直接入包、
+# image-worker 完全缺失的成品，图片附件因此失去防崩溃保护。
+# 安装脚本可重复执行；打包前移除原生备份，但 worker 内保留私有原生闭包。
+"$B/install-image-worker.sh" "$SRC" "$ARCH"
+rm -rf "$SRC/resources/app/dsh/node_modules/.sharp-native-backup"
+
 # Chromium 的 netlink 收包失败路径会无退避重试并刷爆 syslog。
 # 每次打包都从当前源码重建守卫，避免旧树里残留与源码不一致的 .so。
 "$B/scripts/install-netlink-guard.sh" "$SRC" "$ARCH"

@@ -5,6 +5,35 @@
 
 ---
 
+## [3.6.0] — 2026-11-13 — 修复 Sharp 隔离未进入安装包
+
+用户反馈查看图片时客户端崩溃。实测当前 0.2.2-rc.1 成品发现更基础的打包回归：
+`resources/image-worker/` 在 deb/rpm/pkg 中均为 **0 个条目**，顶层 `sharp` 仍是原生包，
+而不是进程隔离 facade。图片处理因此重新暴露于 Electron 进程内的 libvips 崩溃风险。
+
+### 根因
+
+Sharp 隔离只写在手工构建步骤里，`build-packages.sh` 不强制安装也不验收；
+漏跑 `install-image-worker.sh` 仍能产出“构建成功”的包。旧验证脚本又只检查
+`node_modules/sharp/dist/index.cjs` 路径，而原生 sharp 与 facade 恰好同路径，造成误判。
+
+### 修复
+
+- `build-packages.sh` 每次打包都调用 `install-image-worker.sh`，并删除 `.sharp-native-backup/`；
+  不再依赖操作者记得手工执行。
+- `install-image-worker.sh` 改为幂等：首次从原生 sharp 建闭包，后续可从备份或 worker
+  私有闭包恢复；末尾校验 worker、原生依赖、facade 与 JS 语法，缺项即非零退出。
+- `verify-image-worker.cjs` 在加载 sharp 前检查 facade 标记和 worker 载荷，不再把原生包
+  误判为隔离成功。
+- 新增 `tests/test-image-worker.sh`，连续安装两次后跑完整图片链路。
+
+### 实测
+
+- 修复前：facade 检查失败、worker 载荷检查失败，deb/rpm/pkg 的 worker 条目均为 0。
+- 修复后连续两轮全部通过：JPEG / PNG(alpha) / WebP / GIF、6000×4000 大图归一化、
+  两帧动画 GIF、4 路并发 metadata、坏数据与截断 JPEG 抛错。
+- 两轮均为 `pending=0 failures=0`，且 Electron 主进程始终无 libvips。
+
 ## [3.5.0] — 2026-11-13 — 修复 netlink 失败重试刷爆 syslog
 
 Ubuntu 上有实例在夜间将 `/var/log/syslog` 写到约 **444 GB**。重复日志为

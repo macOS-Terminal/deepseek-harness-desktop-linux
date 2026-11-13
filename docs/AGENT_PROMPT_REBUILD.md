@@ -15,8 +15,8 @@ Linux 安装包：补齐 Linux 分支、替换原生模块与运行时，再逐�
 | 内置 Electron（AppImage/deb/rpm） | **45.2.3** |
 | pkg.tar.zst 的 Electron | 系统提供，启动器支持 **39–45**，优先最高版本 |
 | Node / Python / pnpm | **24.21.0 / 3.12.14 / 11.28.5** |
-| 移植修复级别 | **3.5.0**：含 netlink 收包失败退避守卫 |
-| 最低仓库提交 | `5bcb14f`；实际构建必须拉取当时最新 `main` |
+| 移植修复级别 | **3.6.0**：netlink 退避 + Sharp 隔离强制入包 |
+| 最低仓库提交 | 必须包含 3.6.0 图片修复；实际构建拉取当时最新 `main` 并核对 `git log` |
 
 > 不要擅自升级 Node、pnpm、Python。`docs/COMPAT-TOOLCHAIN.md` 记录了升级实测及受阻原因。
 > 不要用 Electron 44.7.0 的旧产物说明替代本基线；45.2.3 已通过原生模块、四预设、托盘与启动验证。
@@ -30,9 +30,10 @@ Linux 安装包：补齐 Linux 分支、替换原生模块与运行时，再逐�
 | 1 | x86_64 应用包 | AppImage + bundled.deb + pkg.tar.zst + rpm |
 | 2 | aarch64 应用包 | 同上 4 种格式 |
 | 3 | 启动验证 | x64 四格式实际启动，日志均出现 `dsh web:`；Agent 四预设全部 `broken=(无)` |
-| 4 | netlink 回归 | 退避实测 `1,2,4,8,8 ms`；普通 socket 不延迟；包内守卫与启动入口齐全 |
-| 5 | 结构与架构 | 四格式均为 zstd；x64 无 arm64 残留，反之亦然 |
-| 6 | 校验和 | 生成 `SHA256SUMS.txt`，`sha256sum -c` 全过 |
+| 4 | 图片回归 | Sharp 隔离重复安装两轮通过；大图/动画/并发/坏图均不使主进程崩溃 |
+| 5 | netlink 回归 | 退避实测 `1,2,4,8,8 ms`；普通 socket 不延迟；包内守卫与启动入口齐全 |
+| 6 | 结构与架构 | 四格式均为 zstd；x64 无 arm64 残留，反之亦然 |
+| 7 | 校验和 | 生成 `SHA256SUMS.txt`，`sha256sum -c` 全过 |
 
 **只构建 bundled.deb，不构建 system.deb。**
 
@@ -65,6 +66,7 @@ trim-app-tree.sh               裁剪与静态 import 自检
 install-image-worker.sh        Sharp 进程隔离
 verify-launch-x64.sh           四格式实际启动（经包内启动器）
 tests/test-netlink-guard.sh    netlink 退避与入口测试
+tests/test-image-worker.sh     Sharp 幂等安装与图片全链路测试
 docs/NETLINK-GUARD.md          netlink 根因与验证说明
 docs/CHANGELOG.md              历史修复记录
 ```
@@ -213,6 +215,17 @@ rm -rf out-arm64/resources/app/dsh/node_modules/.sharp-native-backup
 libvips 在 Electron 进程内会 SIGSEGV，JS 无法捕获，因此必须转发到独立 Node worker。
 打包前必须删除备份目录，避免白占体积。
 
+`build-packages.sh` 现在会**强制重新安装** Sharp 隔离并删除备份，漏掉上述手工命令也不能继续出包。
+安装脚本可重复执行：第二轮会从备份或 worker 的私有原生闭包恢复，不会把 facade 错当成原生 sharp。
+完整回归：
+
+```bash
+./tests/test-image-worker.sh out-x64 x64
+```
+
+该测试连续安装两次，再检查 facade 标记、worker 载荷、JPEG/PNG/WebP/GIF、6000×4000 大图、
+动画 GIF、并发请求、坏数据与截断 JPEG；主进程必须始终无 libvips。
+
 ### 4.6 netlink 收包失败退避守卫
 
 装配脚本已经安装一次；需要显式复核或重建时执行：
@@ -256,6 +269,7 @@ FORMATS=deb DSH_OUT="$PWD/dist-check" ./build-packages.sh x64
 ### 5.1 自动测试与四格式启动
 
 ```bash
+./tests/test-image-worker.sh out-x64 x64
 ./tests/test-netlink-guard.sh
 ./verify-launch-x64.sh "$PWD/dist"
 ```
@@ -281,7 +295,7 @@ netlink 测试用 seccomp 模拟 `EACCES`，不会写真实 syslog。必须看�
 | 静态 import | 在构建树上运行 `bash trim-app-tree.sh out-x64` | 全部可解析；0.2.2-rc.1 实测 119 项，数量可随上游变化 |
 | 托盘 | 查 `resources/tray.png` 并用 `nativeImage` 读取 | 文件存在、非空、32×32 |
 | 指纹 | 查 addon `Matches` 处字节 | x64 `b8010000`；arm64 `20008052` |
-| Sharp | 运行 `image-worker-src/verify-image-worker.cjs` | `✅ 图片链路与隔离均通过` |
+| Sharp | `./tests/test-image-worker.sh out-x64 x64` | 两轮幂等安装均通过；大图/动画/并发/坏图通过；主进程无 libvips |
 | netlink 退避 | `tests/test-netlink-guard.sh` | `1,2,4,8,8 ms`；普通 socket 0ms |
 | 守卫文件 | 解包查 `resources/netlink-guard/libdsh-netlink-guard.so` | 存在且架构正确 |
 | 守卫入口 | 查 AppRun 与 `/usr/bin/deepseek-harness` | 含正确 `LD_PRELOAD`；不得绕过启动器验证 |
@@ -428,7 +442,7 @@ Ubuntu 21.04 自带 zstd backport；上游 Debian 到 dpkg 1.21.18 才加入。
 | Agent 标准/PTC/创造预设「加载失败」 | 检查 `dsh-sandbox-windows-acl`；它是静态依赖，不能裁剪 |
 | `Cannot find module .../app.asar/...` | 布局错误，必须展开为 `resources/app/` |
 | 托盘存在但图标空白 | `resources/tray.png` 缺失；`nativeImage.createFromPath()` 对缺失文件返回空图而不抛错 |
-| 图片一发就崩 | Sharp 隔离未装好，检查 `resources/image-worker/` |
+| 图片一发就崩 | 检查顶层 sharp 是否带 `Out-of-process Sharp facade` 标记、`resources/image-worker/` 是否完整；路径相同不等于 facade |
 | `unsupported Electron runtime fingerprint` | 指纹补丁未打或定位失败；不要改回硬编码偏移 |
 | 系统 Electron 白屏 | 检查 `DSH_DESKTOP_RESOURCES_DIR` 与 `DSH_DESKTOP_FORCE_PACKAGED` |
 | `EADDRINUSE` | 按实际日志端口停掉旧实例；不要假设所有版本都固定 19387 |
@@ -450,7 +464,7 @@ Ubuntu 21.04 自带 zstd backport；上游 Debian 到 dpkg 1.21.18 才加入。
 4. 不要删除 netlink 守卫或绕过启动器做最终验证；`DSH_NETLINK_GUARD=0` 仅用于诊断。
 5. 不要为了让测试通过而放宽断言，不要把超时/工具失败写成“验证通过”。
 6. 四种格式必须都用 zstd，不要恢复旧 AppImage 压缩参数。
-7. 打包前删除 `.sharp-native-backup/`。
+7. 打包前删除 `.sharp-native-backup/`；不得跳过 Sharp 隔离安装与图片全链路验证。
 8. 测试 profile 必须放 `/tmp` 等隔离位置并清理，不要污染真实 `~/.dsh/profiles/`。
 
 ---
