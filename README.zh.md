@@ -22,6 +22,7 @@ dsh-desktop-linux-source/
 │   ├── client.cjs               Sharp API 兼容层（跑在 Electron 内，只转发）
 │   ├── worker.cjs               真正执行 libvips 的独立 Node 进程
 │   └── verify-image-worker.cjs  隔离效果自检脚本
+├── netlink-guard/               Chromium netlink 收包失败退避守卫
 ├── icons/                       桌面项与 16→512 全套 hicolor 图标
 ├── build-packages.sh            打全部格式（deb×2 / pkg / rpm / AppImage）
 ├── install-image-worker.sh      把 Sharp 替身包装入某个应用树
@@ -103,6 +104,8 @@ Python 必须是 **python-build-standalone 的 `install_only_stripped`** 变体�
 - `mksquashfs`（squashfs-tools，AppImage 用）
 - AppImage type2 runtime：`runtime-x86_64`、`runtime-aarch64`
 - `rpmbuild`、`bsdtar`、`fakeroot`、`ar`、`zstd`、`xz`
+- C 编译器：x64 用 `cc`；x86_64 主机交叉构建 arm64 用 `aarch64-linux-gnu-gcc`
+  （也可用 `CC_X64` / `CC_ARM64` 指定）
 
 放到 `tools/`：
 
@@ -194,7 +197,20 @@ python3 patches/patch-fingerprint.py \
 
 ⚠️ 打包前**务必删除** `node_modules/.sharp-native-backup/`，否则会白占体积。
 
-### 6. 自检
+### 6. 安装 netlink 收包失败退避守卫
+
+```bash
+./scripts/install-netlink-guard.sh out-x64 x64
+# arm64 交叉构建默认使用 aarch64-linux-gnu-gcc
+./scripts/install-netlink-guard.sh out-arm64 arm64
+```
+
+Chromium 在 netlink `recv()` 权限失败后保留 watcher，会无退避重试并刷爆 syslog。
+守卫仅对 `AF_NETLINK` 的 `EACCES` / `EPERM` / `ENOBUFS` 施加 1–60 秒指数退避，
+不影响普通 socket，也不屏蔽其他错误日志。详见 `docs/NETLINK-GUARD.md`。
+`assemble-tree.sh` 与 `build-packages.sh` 会自动执行本步骤。
+
+### 7. 自检
 
 ```bash
 # 图片链路与隔离（需图形环境或 xvfb）
@@ -206,7 +222,7 @@ HOME=/tmp/t DSH_HOME=/tmp/t/.dsh xvfb-run -a ./out-x64/deepseek-harness --ozone-
 # 看到 "dsh web: http://127.0.0.1:19387/" 即成功
 ```
 
-### 7. arm64 同理
+### 8. arm64 同理
 
 把上面的 `x64` 换成 `arm64`（原生模块、Electron、Node、Python 载荷都要换对应架构）。
 
@@ -293,7 +309,8 @@ ZSTD_OPTS="-19 -T0 --long=27"  # --long 提升大载荷压缩率
 ## 四、验证
 
 ```bash
-./verify-launch-x64.sh          # 五种格式逐个解包并实际启动
+./tests/test-netlink-guard.sh  # seccomp 模拟 EACCES，验证 1/2/4/8/8ms 退避
+./verify-launch-x64.sh          # 四种格式逐个解包并实际启动
 cd dist && sha256sum -c SHA256SUMS.txt
 ```
 
@@ -335,6 +352,7 @@ qemu-aarch64-static -L <sysroot> out-arm64/resources/runtime/.../node -e "consol
 | `unsupported Electron runtime fingerprint` | `patch-fingerprint.py` 没打 |
 | 启动即 `EADDRINUSE 127.0.0.1:19387` | 已有一个实例在跑（应用固定用这个端口），先关掉 |
 | 图片一发就整个应用崩 | Sharp 替身包没装好，检查 `resources/image-worker/` |
+| syslog 反复出现 `Failed to recv from netlink socket` | Chromium 收包失败后无退避重试；确认 `resources/netlink-guard/` 存在并从标准启动器启动。紧急诊断可用 `DSH_NETLINK_GUARD=0`，日常不要关闭 |
 | 侧栏折叠后无法展开 / 侧栏右缘缺口 / 文字发灰 | 均因 `backdrop-filter` 放在侧栏元素上（旧版缺陷）。现由独立层 `#dsh-mac-vibrancy` 承担模糊，且插在 `#root` 之前 + `z-index:-1` |
 | 内容区左上角露白、全屏布局不对 | 应用给 `_centerCol` 的 16px 圆角 + 缺全屏规则；已置零圆角并对齐 macOS 全屏（隐藏交通灯、折叠键靠左） |
 | 真全屏（niri 等平铺合成器）不隐藏交通灯 | 上游把 Linux 排除在事件注册与 preload 监听之外，且平铺合成器不报告全屏；已补视口自检 |

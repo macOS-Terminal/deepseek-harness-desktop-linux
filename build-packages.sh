@@ -43,6 +43,10 @@ say() { printf '\n== %s ==\n' "$*"; }
 ZSTD_OPTS="${ZSTD_OPTS:--19 -T0 --long=27}"
 ZSTD_LEVEL="${ZSTD_LEVEL:-19}"
 
+# Chromium 的 netlink 收包失败路径会无退避重试并刷爆 syslog。
+# 每次打包都从当前源码重建守卫，避免旧树里残留与源码不一致的 .so。
+"$B/scripts/install-netlink-guard.sh" "$SRC" "$ARCH"
+
 # rpm 的 Version/Release 需与上游一致：0.2.1-rc.5 -> Version 0.2.1 / Release 0.rc5
 RPM_VERSION="${VER%%-*}"          # 0.2.1
 RPM_RELEASE_RAW="${VER#*-}"       # rc.5
@@ -181,9 +185,28 @@ ELECTRON_BIN=$(find_electron) || {
 export DSH_DESKTOP_FORCE_PACKAGED=1
 export DSH_DESKTOP_RESOURCES_DIR="$APP_DIR"
 export DSH_DESKTOP_NODE_EXECUTABLE="$ELECTRON_BIN"
+GUARD="$APP_DIR/netlink-guard/libdsh-netlink-guard.so"
+if [ "${DSH_NETLINK_GUARD:-1}" != 0 ] && [ -r "$GUARD" ]; then
+  LD_PRELOAD="$GUARD${LD_PRELOAD:+:$LD_PRELOAD}"
+  export LD_PRELOAD
+fi
 exec "$ELECTRON_BIN" "$APP_DIR/app" "$@"
 LAUNCH
 chmod 755 "$META/launcher"
+
+# 内置 Electron 的 deb / rpm 也经 shell 入口注入同一个守卫。
+cat > "$META/bundled-launcher" <<'LAUNCH'
+#!/bin/sh
+set -e
+APP_HOME=/usr/lib/deepseek-harness
+GUARD="$APP_HOME/resources/netlink-guard/libdsh-netlink-guard.so"
+if [ "${DSH_NETLINK_GUARD:-1}" != 0 ] && [ -r "$GUARD" ]; then
+  LD_PRELOAD="$GUARD${LD_PRELOAD:+:$LD_PRELOAD}"
+  export LD_PRELOAD
+fi
+exec "$APP_HOME/deepseek-harness" "$@"
+LAUNCH
+chmod 755 "$META/bundled-launcher"
 
 # -------------------------------------------------------------------- deb ----
 # Only the bundled build is shipped. A system-Electron variant would need a
@@ -200,7 +223,7 @@ build_deb() {
   cp -a "$SRC/." "$D/usr/lib/deepseek-harness/"
   normalize_modes "$D/usr/lib/deepseek-harness"
   trim_tree "$D/usr/lib/deepseek-harness"
-  printf '#!/bin/sh\nexec /usr/lib/deepseek-harness/deepseek-harness "$@"\n' > "$D/usr/bin/deepseek-harness"
+  cp "$META/bundled-launcher" "$D/usr/bin/deepseek-harness"
   deps="libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0, libgbm1, libasound2, libdrm2, libxkbcommon0, libxcomposite1, libxdamage1, libxfixes3, libxrandr2, libcups2, libx11-xcb1, libxcb-dri3-0"
   chmod 755 "$D/usr/bin/deepseek-harness"
   cp "$B/icons/deepseek-harness.desktop" "$D/usr/share/applications/"
@@ -263,6 +286,7 @@ build_rpm() {
   normalize_modes "$top/SOURCES/app"
   trim_tree "$top/SOURCES/app"
   cp "$B/icons/deepseek-harness.desktop" "$top/SOURCES/"
+  cp "$META/bundled-launcher" "$top/SOURCES/deepseek-harness-launcher"
   cp -a "$META/icons" "$top/SOURCES/icons"
   cat > "$top/SPECS/deepseek-harness.spec" <<SPEC
 Name:           deepseek-harness
@@ -289,7 +313,7 @@ This build bundles its own Electron ${ELECTRON_VER} runtime.
 mkdir -p %{buildroot}/usr/lib/deepseek-harness
 cp -a %{_sourcedir}/app/. %{buildroot}/usr/lib/deepseek-harness/
 mkdir -p %{buildroot}/usr/bin
-printf '#!/bin/sh\nexec /usr/lib/deepseek-harness/deepseek-harness "\$@"\n' > %{buildroot}/usr/bin/deepseek-harness
+cp %{_sourcedir}/deepseek-harness-launcher %{buildroot}/usr/bin/deepseek-harness
 chmod 755 %{buildroot}/usr/bin/deepseek-harness
 mkdir -p %{buildroot}/usr/share/applications
 cp %{_sourcedir}/deepseek-harness.desktop %{buildroot}/usr/share/applications/
@@ -376,6 +400,11 @@ find_electron() {
   return 1
 }
 ELECTRON=$(find_electron) || { echo "dsh: 未找到 Electron 运行时（需要 electron45）" >&2; exit 1; }
+GUARD="$runtime/../netlink-guard/libdsh-netlink-guard.so"
+if [ "${DSH_NETLINK_GUARD:-1}" != 0 ] && [ -r "$GUARD" ]; then
+  LD_PRELOAD="$GUARD${LD_PRELOAD:+:$LD_PRELOAD}"
+  export LD_PRELOAD
+fi
 ELECTRON_RUN_AS_NODE=1 exec "$ELECTRON" --expose-internals "$cli" "$@"
 CLIEOF
     chmod 755 "$CLI"
@@ -455,7 +484,17 @@ build_appimage() {
     mkdir -p "$A/usr/share/icons/hicolor/${s}x${s}/apps"
     cp "$META/icons/${s}x${s}/deepseek-harness.png" "$A/usr/share/icons/hicolor/${s}x${s}/apps/"
   done
-  printf '#!/bin/sh\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/deepseek-harness" "$@"\n' > "$A/AppRun"
+  cat > "$A/AppRun" <<'APPRUN'
+#!/bin/sh
+set -e
+HERE="$(dirname "$(readlink -f "$0")")"
+GUARD="$HERE/resources/netlink-guard/libdsh-netlink-guard.so"
+if [ "${DSH_NETLINK_GUARD:-1}" != 0 ] && [ -r "$GUARD" ]; then
+  LD_PRELOAD="$GUARD${LD_PRELOAD:+:$LD_PRELOAD}"
+  export LD_PRELOAD
+fi
+exec "$HERE/deepseek-harness" "$@"
+APPRUN
   chmod 755 "$A/AppRun"
   # squashfs 的 zstd 用 1M 块 + level 19。
   # -Xdict-size 只对 xz 有效（zstd 压缩器只有 -Xcompression-level），传了会报

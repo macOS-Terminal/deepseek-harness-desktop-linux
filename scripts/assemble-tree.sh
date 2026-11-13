@@ -19,7 +19,7 @@ esac
 OUT="$B/$TREE"
 say() { printf '\n== %s ==\n' "$*"; }
 
-say "1/5 铺 Electron 骨架 -> $TREE"
+say "1/6 铺 Electron 骨架 -> $TREE"
 rm -rf "$OUT"; mkdir -p "$OUT"
 unzip -oq "$B/dl/electron-44.7.0-linux-$NODE_ARCH.zip" -d "$OUT"
 mv "$OUT/electron" "$OUT/deepseek-harness"
@@ -28,13 +28,13 @@ rm -f "$OUT/resources/default_app.asar"
 echo "  electron: $("$OUT/deepseek-harness" --version 2>/dev/null || echo '（无法执行，稍后验证）')"
 echo "  chrome-sandbox: $(ls -l "$OUT/chrome-sandbox" | awk '{print $1}')"
 
-say "2/5 放入应用载荷 resources/app"
+say "2/6 放入应用载荷 resources/app"
 cp -a "$B/app-new/." "$OUT/resources/app/"
 # dmg 出来的 xattr 影子文件无用
 find "$OUT/resources/app" -name '*:com.apple.*' -delete 2>/dev/null || true
 echo "  app 文件数: $(find "$OUT/resources/app" -type f | wc -l)"
 
-say "3/5 装配 runtime 载荷"
+say "3/6 装配 runtime 载荷"
 RT="$OUT/resources/runtime"
 rm -rf "$RT"; mkdir -p "$RT"
 cp -a "$DMG/runtime/bin" "$DMG/runtime/cli" "$DMG/runtime/office-skills" "$DMG/runtime/versions.json" "$RT/"
@@ -68,7 +68,7 @@ rm -rf /tmp/pyx-$ARCH
 SITE="$DEPS/python/lib/python3.12/site-packages"
 mkdir -p "$SITE"
 
-say "4/5 交叉安装 Python 站点包 ($ARCH)"
+say "4/6 交叉安装 Python 站点包 ($ARCH)"
 pip3 install --quiet --no-cache-dir --target "$SITE" $PIP_PLAT \
   --python-version 3.12 --implementation cp --only-binary=:all: \
   numpy==2.3.5 pandas==3.0.1 Pillow==12.3.0 lxml==6.1.3 \
@@ -88,7 +88,10 @@ json.dump(d, open(p, "w"), indent=2, ensure_ascii=False)
 print("  runtime.json:", d["platform"], d["arch"])
 PY
 
-say "5/5 替换原生模块 -> Linux $ARCH"
+say "5/6 替换原生模块 -> Linux $ARCH"
 "$B/swap-native-linux.sh" "$OUT/resources/app" "$B/dl/linux-$ARCH" "$ARCH"
+
+say "6/6 安装 netlink 收包失败退避守卫"
+"$B/scripts/install-netlink-guard.sh" "$OUT" "$ARCH"
 
 say "完成 $TREE  大小: $(du -sh "$OUT" | cut -f1)"

@@ -52,6 +52,7 @@ swap-native-linux.sh              平台包替换（x64/arm64）+ 缺失包自�
 trim-app-tree.sh                  裁剪运行时冗余 + 静态 import 完整性自检
 build-packages.sh                 全格式打包入口
 install-image-worker.sh           Sharp 进程隔离
+scripts/install-netlink-guard.sh   netlink 收包失败退避守卫
 verify-launch-x64.sh              逐格式解包并实测启动
 image-worker-src/                 Sharp 隔离方案（3 个 .cjs）
 icons/                            桌面项 + 全套图标
@@ -212,7 +213,16 @@ arm64 同理，把 `x64` 换成 `arm64`。
 > libvips 在 Electron 进程内会 SIGSEGV，JS 层无法捕获，整个桌面端崩溃。
 > 方案是转发到独立 Node worker。打包前**务必删除** `node_modules/.sharp-native-backup/`。
 
-### 4.6 打包
+### 4.6 netlink 收包失败退避守卫
+```bash
+./scripts/install-netlink-guard.sh out-x64 x64
+./scripts/install-netlink-guard.sh out-arm64 arm64
+```
+> Chromium 在 netlink `recv()` 失败后保留 watcher，会无退避重试并刷爆 syslog。
+> x64 需要 `cc`；x86_64 交叉 arm64 默认需要 `aarch64-linux-gnu-gcc`（可用 `CC_ARM64` 覆盖）。
+> 根因、入口与验证见 `docs/NETLINK-GUARD.md`。`build-packages.sh` 也会自动重建该守卫。
+
+### 4.7 打包
 ```bash
 ./build-packages.sh x64
 ./build-packages.sh arm64
@@ -226,6 +236,7 @@ arm64 同理，把 `x64` 换成 `arm64`。
 
 ### 5.1 自动验证
 ```bash
+./tests/test-netlink-guard.sh
 ./verify-launch-x64.sh
 cd dist && sha256sum -c SHA256SUMS.txt
 ```
@@ -240,6 +251,8 @@ cd dist && sha256sum -c SHA256SUMS.txt
 | **托盘图标** | `ls <app>/resources/tray.png`；用 `nativeImage.createFromPath()` 读它 | 文件存在；`isEmpty()=false`、尺寸 32×32 |
 | 指纹已打 | 查 addon 的 `Matches` 处字节 | x64 `b8010000`、arm64 `20008052` |
 | Sharp 隔离 | `ELECTRON_RUN_AS_NODE=1 <app> image-worker-src/verify-image-worker.cjs` | `✅ 图片链路与隔离均通过` |
+| netlink 退避 | `./tests/test-netlink-guard.sh` | `1,2,4,8,8 ms`；普通 socket 0ms |
+| 守卫入口 | 解包查 `resources/netlink-guard/libdsh-netlink-guard.so` 与启动脚本 | 文件存在；启动脚本含 `LD_PRELOAD` |
 | deb 可解析 | `ar t <deb>` | 含 `data.tar.zst`、`control.tar.zst` |
 | rpm 可读 | `rpm -qp --qf '%{PAYLOADCOMPRESSOR}\n' <rpm>` | 输出 `zstd` |
 | pkg 可读 | `bsdtar -tf <pkg.tar.zst> \| head` | 无错误 |

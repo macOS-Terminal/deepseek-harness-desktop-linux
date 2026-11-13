@@ -5,6 +5,40 @@
 
 ---
 
+## [3.5.0] — 2026-11-13 — 修复 netlink 失败重试刷爆 syslog
+
+Ubuntu 上有实例在夜间将 `/var/log/syslog` 写到约 **444 GB**。重复日志为
+`Failed to recv from netlink socket: Permission denied (13)`。
+
+### 根因
+
+问题来自 Electron 内的 Chromium `AddressTrackerLinux::ReadMessages()`：`recv()` 失败后只记录错误并返回，
+readable-fd watcher 与 socket 都保留，事件循环随即再次调用，形成无退避的日志风暴。
+这不是 Harness 业务 JS 的日志，也不是 Agent 插件导致。rsyslog 的 `maxsize` 能限制损失上限，
+但不能消除进程内的高频重试。
+
+### 修复
+
+- 新增 `netlink-guard/netlink_guard.c`：只跟踪 `AF_NETLINK` fd，在 `EACCES` / `EPERM` /
+  `ENOBUFS` 上施加 **1、2、4…60 秒**指数退避；成功收包后重置，关闭 fd 后清除状态。
+- 原始 `errno` 原样返回，不伪装成功、不全局关闭 Chromium 错误日志；普通 socket 与 `EAGAIN`
+  不施加退避。
+- AppImage、deb、rpm、pkg.tar.zst 的标准启动入口统一加载守卫；系统 Electron 的 CLI 同样覆盖。
+- `scripts/assemble-tree.sh` 与 `build-packages.sh` 自动构建并安装守卫，避免旧 `.so` 残留。
+- 新增 `DSH_NETLINK_GUARD=0` 诊断开关；详见 `docs/NETLINK-GUARD.md`。
+
+### 验证
+
+`tests/test-netlink-guard.sh` 使用 seccomp 人为返回 `EACCES`，不写真实 syslog：
+
+- 无守卫：`0,0,0,0,0 ms`；
+- 有守卫（测试上限 8ms）：`1,2,4,8,8 ms`，验证指数增长及封顶；
+- 普通 AF_UNIX socket：始终 `0 ms`；
+- `DSH_NETLINK_GUARD=0`：恢复 `0 ms` 透传。
+
+x64 编译与集成测试通过；arm64 交叉编译需在具备 `aarch64-linux-gnu-gcc`（或 `CC_ARM64`）
+的构建机上验证。
+
 ## [3.4.0] — 2026-11-07 — Arch 依赖修复：放行 Electron 39–45
 
 上一版（3.3.0）在真机 Arch 上装不上，报两条错：

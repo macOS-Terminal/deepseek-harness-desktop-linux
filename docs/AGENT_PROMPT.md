@@ -49,6 +49,7 @@ swap-native-linux.sh              平台包替换（x64/arm64）
 trim-app-tree.sh                  裁剪运行时冗余
 build-packages.sh                 全格式打包入口
 install-image-worker.sh           Sharp 进程隔离
+scripts/install-netlink-guard.sh   netlink 收包失败退避守卫
 verify-launch-x64.sh              逐格式解包并实测启动
 image-worker-src/                 Sharp 隔离方案（3 个 .cjs）
 icons/                            桌面项 + 全套图标
@@ -200,7 +201,16 @@ arm64 同理，把 `x64` 换成 `arm64`。
 > libvips 在 Electron 进程内会 SIGSEGV，JS 层无法捕获，整个桌面端崩溃。
 > 方案是转发到独立 Node worker。打包前**务必删除** `node_modules/.sharp-native-backup/`。
 
-### 4.6 打包
+### 4.6 netlink 收包失败退避守卫
+```bash
+./scripts/install-netlink-guard.sh out-x64 x64
+./scripts/install-netlink-guard.sh out-arm64 arm64
+```
+> 防止 Chromium 的 netlink `recv()` 权限失败演变为无退避 syslog 洪泛。
+> x64 需要 `cc`；x86_64 交叉 arm64 默认需要 `aarch64-linux-gnu-gcc`。
+> 详见 `docs/NETLINK-GUARD.md`。`build-packages.sh` 也会自动重建该守卫。
+
+### 4.7 打包
 ```bash
 ./build-packages.sh x64
 ./build-packages.sh arm64
@@ -243,6 +253,7 @@ ZSTD_OPTS="-19 -T0 --long=27" # --long 提升大载荷压缩率
 
 ### 6.1 自动
 ```bash
+./tests/test-netlink-guard.sh
 ./verify-launch-x64.sh
 cd dist && sha256sum -c SHA256SUMS.txt
 ```
