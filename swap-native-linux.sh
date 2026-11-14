@@ -70,6 +70,12 @@ echo "== 清理 macOS 扩展属性影子文件 =="
 # 它们不是包，但会让"darwin 残留"计数失真，且对 Linux 无意义。
 find "$NM" -name '*:com.apple.provenance' -delete 2>/dev/null || true
 
+# 上游包自带 win32/darwin 的 prebuilds（如 libreoffice-kit 的 frame-forwarding），
+# Linux 永远不加载，留着既白占 ~3MB，又会让架构核验把 PE 的 x86-64 当成残留。
+# 只删 prebuilds 下的平台目录，不动包本身。
+find "$NM" -type d -path '*/prebuilds/win32-*' -prune -exec rm -rf {} + 2>/dev/null || true
+find "$NM" -type d -path '*/prebuilds/darwin-*' -prune -exec rm -rf {} + 2>/dev/null || true
+
 # 必备的跨平台包：dsh-sandbox-local 顶层静态 import 它，删掉会让整个
 # dsh-sandbox-local 插件加载失败（sandbox/shell/ptcRuntime/workflowEngine
 # 四个服务随之缺失，Agent 预设的标准/PTC/创造模式会显示「加载失败」）。
@@ -106,7 +112,9 @@ echo "== 架构核验（应为 ${ARCH}）=="
 want=$([ "$ARCH" = x64 ] && echo 'x86-64' || echo 'ARM aarch64')
 bad=0
 while IFS= read -r f; do
-  got=$(file -b "$f" 2>/dev/null | grep -oE 'ARM aarch64|x86-64' | head -1)
+  # set -o pipefail 下 grep 无匹配会返回 1 并让整个脚本静默退出（rc.3 里出现了
+  # file 认不出架构的 .so），必须兜住。
+  got=$(file -b "$f" 2>/dev/null | grep -oE 'ARM aarch64|x86-64' | head -1 || true)
   if [ -n "$got" ] && [ "$got" != "$want" ]; then
     printf '  ✗ %s → %s\n' "${f#$NM/}" "$got"; bad=$((bad+1))
   fi

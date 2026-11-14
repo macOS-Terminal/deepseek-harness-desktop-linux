@@ -1,818 +1,115 @@
 # Changelog
 
-本项目是 **DeepSeek Harness 桌面端（Electron）的 Linux 移植/重打包**。
+DeepSeek Harness 桌面端（Electron）的 Linux 移植/重打包记录。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+
+---
+
+## [3.7.1] — 2026-11-14 — 跟进上游 `0.2.2-rc.3`
+
+上游桌面端升级到 `0.2.2-rc.3`，本版重跑整条构建链并对齐 `main` 基线。
+
+### 修复
+
+- `scripts/assemble-tree.sh`：自动探测 `others/dmg` 下最新的上游目录，不再写死版本号；
+  上游已移除 `runtime/office-skills`，改为存在才复制；装配时补 `resources/tray.png`。
+- `patches/patch-titlebar.py`：rc.3 把窗口选项移入 `createWindow()` 并在 win32 分支新增字段，
+  改用整块匹配再追加 Linux 分支，不再依赖块内字段顺序。
+- `patches/patch-mac-chrome.py`：按 rc.3 的 `import` 列表动态插入 `screen`，并保留语句分号。
+- `swap-native-linux.sh`：`file | grep` 无匹配时不再因 `pipefail` 静默中止；
+  清理上游自带的 win32/darwin prebuilds。
+- 恢复 `scripts/` 下 5 个脚本的可执行位，避免 `Permission denied`。
+
+### 产物
+
+x86_64 与 aarch64 各 4 种格式，共 8 个应用包，另附 2 个 `electron45` 运行时包。
+详见 `docs/ARTIFACTS.md`。
 
 ---
 
 ## [3.6.0] — 2026-11-13 — 修复 Sharp 隔离未进入安装包
 
-用户反馈查看图片时客户端崩溃。实测当前 0.2.2-rc.1 成品发现更基础的打包回归：
-`resources/image-worker/` 在 deb/rpm/pkg 中均为 **0 个条目**，顶层 `sharp` 仍是原生包，
-而不是进程隔离 facade。图片处理因此重新暴露于 Electron 进程内的 libvips 崩溃风险。
-
-### 根因
-
-Sharp 隔离只写在手工构建步骤里，`build-packages.sh` 不强制安装也不验收；
-漏跑 `install-image-worker.sh` 仍能产出“构建成功”的包。旧验证脚本又只检查
-`node_modules/sharp/dist/index.cjs` 路径，而原生 sharp 与 facade 恰好同路径，造成误判。
-
 ### 修复
 
-- `build-packages.sh` 每次打包都调用 `install-image-worker.sh`，并删除 `.sharp-native-backup/`；
-  不再依赖操作者记得手工执行。
-- `install-image-worker.sh` 改为幂等：首次从原生 sharp 建闭包，后续可从备份或 worker
-  私有闭包恢复；末尾校验 worker、原生依赖、facade 与 JS 语法，缺项即非零退出。
-- `verify-image-worker.cjs` 在加载 sharp 前检查 facade 标记和 worker 载荷，不再把原生包
-  误判为隔离成功。
-- 新增 `tests/test-image-worker.sh`，连续安装两次后跑完整图片链路。
+- 成品包中 `resources/image-worker/` 缺失、`sharp` 仍是原生包，图片处理失去进程隔离保护。
+- `build-packages.sh` 现在每次打包都强制安装 Sharp 隔离并清理原生备份。
+- `install-image-worker.sh` 改为幂等，可从备份或 worker 私有闭包恢复原生 sharp。
+- 验证脚本改为检查 facade 标记，不再因原生包与 facade 入口路径相同而误判通过。
+- 新增 `tests/test-image-worker.sh`，覆盖大图、动画 GIF、并发与异常图片。
 
-### 实测
+### 验证
 
-- 修复前：facade 检查失败、worker 载荷检查失败，deb/rpm/pkg 的 worker 条目均为 0。
-- 修复后连续两轮全部通过：JPEG / PNG(alpha) / WebP / GIF、6000×4000 大图归一化、
-  两帧动画 GIF、4 路并发 metadata、坏数据与截断 JPEG 抛错。
-- 两轮均为 `pending=0 failures=0`，且 Electron 主进程始终无 libvips。
+JPEG / PNG / WebP / GIF、6000×4000 大图、两帧 GIF、4 路并发、坏数据与截断 JPEG 全部通过，
+Electron 主进程始终未加载 libvips。
+
+---
 
 ## [3.5.0] — 2026-11-13 — 修复 netlink 失败重试刷爆 syslog
 
-Ubuntu 上有实例在夜间将 `/var/log/syslog` 写到约 **444 GB**。重复日志为
-`Failed to recv from netlink socket: Permission denied (13)`。
+### 修复
 
-### 根因
+- Chromium 的 netlink 收包失败后无退避重试，导致日志风暴。
+- 新增 `netlink-guard/netlink_guard.c`：仅对 `AF_NETLINK` 的 `EACCES`/`EPERM`/`ENOBUFS`
+  施加 1/2/4…60 秒指数退避，保留原错误，普通 socket 不受影响。
+- 四种格式的启动器统一注入该守卫；可用 `DSH_NETLINK_GUARD=0` 临时关闭。
+- 详见 `docs/NETLINK-GUARD.md`。
 
-问题来自 Electron 内的 Chromium `AddressTrackerLinux::ReadMessages()`：`recv()` 失败后只记录错误并返回，
-readable-fd watcher 与 socket 都保留，事件循环随即再次调用，形成无退避的日志风暴。
-这不是 Harness 业务 JS 的日志，也不是 Agent 插件导致。rsyslog 的 `maxsize` 能限制损失上限，
-但不能消除进程内的高频重试。
+---
+
+## [3.4.0] — 2026-11-07 — Arch 安装失败修复
 
 ### 修复
 
-- 新增 `netlink-guard/netlink_guard.c`：只跟踪 `AF_NETLINK` fd，在 `EACCES` / `EPERM` /
-  `ENOBUFS` 上施加 **1、2、4…60 秒**指数退避；成功收包后重置，关闭 fd 后清除状态。
-- 原始 `errno` 原样返回，不伪装成功、不全局关闭 Chromium 错误日志；普通 socket 与 `EAGAIN`
-  不施加退避。
-- AppImage、deb、rpm、pkg.tar.zst 的标准启动入口统一加载守卫；系统 Electron 的 CLI 同样覆盖。
-- `scripts/assemble-tree.sh` 与 `build-packages.sh` 自动构建并安装守卫，避免旧 `.so` 残留。
-- 新增 `DSH_NETLINK_GUARD=0` 诊断开关；详见 `docs/NETLINK-GUARD.md`。
+- `libuuid` 不是 Arch 包名，改由 `util-linux` 提供；移除 `.PKGINFO` 中的注释行。
+- 删除错误的 `conflicts` 键，并放开 Electron 39–45 任意版本。
+- 启动器按版本从高到低探测，支持 `DSH_ELECTRON_BIN` 指定。
+- 新增 `electron45` 运行时包。
 
-### 验证
+---
 
-`tests/test-netlink-guard.sh` 使用 seccomp 人为返回 `EACCES`，不写真实 syslog：
-
-- 无守卫：`0,0,0,0,0 ms`；
-- 有守卫（测试上限 8ms）：`1,2,4,8,8 ms`，验证指数增长及封顶；
-- 普通 AF_UNIX socket：始终 `0 ms`；
-- `DSH_NETLINK_GUARD=0`：恢复 `0 ms` 透传。
-
-x64 编译与集成测试通过；arm64 交叉编译需在具备 `aarch64-linux-gnu-gcc`（或 `CC_ARM64`）
-的构建机上验证。
-
-## [3.4.0] — 2026-11-07 — Arch 依赖修复：放行 Electron 39–45
-
-上一版（3.3.0）在真机 Arch 上装不上，报两条错：
-
-```
-警告：electron45：软件包描述中有未知的密钥 'conflicts'
-警告：无法解决 "libuuid"，"electron45" 的一个依赖关系
-```
-
-本版把 Arch 侧的两个硬伤都修掉，并把「只有一个 Electron 也行」做成真的。
-
-### 修复
-
-- **`libuuid` 不是 Arch 包**：它属于 `util-linux`。整张依赖表按 `DT_NEEDED`
-  反推重写，包名逐个在 archlinux.org 核过（gtk3 / glib2 / pango / cairo /
-  at-spi2-core / nss / nspr / alsa-lib / libcups / libdrm / mesa / libxkbcommon /
-  libxcomposite / libxdamage / libxfixes / libxrandr / libxext / libx11 / libxcb /
-  libxss / libxtst / dbus / expat / systemd-libs / util-linux / zlib / glibc / libgcc），
-  `libsecret` / `libnotify` / `xdg-utils` 降为 `optdepend`。
-- **`conflicts` 是错误键名**：libalpm 只认单数 `conflict`。该行本就无意义
-  （冲突对象不存在），直接删除。
-- **`.PKGINFO` 里不再写注释**：pacman 只解析 `key = value`，多余行会被当成未知键
-  （就是上面那条警告的来源）。
-- **`pkg.tar.zst` 去掉写死的 `depend`**：原来 `depend = electron45` 会让只装了
-  `electron` / `electron44` 的机器被 pacman 直接拦下。现在 Electron 39–45 任意版本
-  都不阻塞安装，`electron45` / `electron` / `nodejs-electron` 改为 `optdepend`，
-  `post_install` 检测不到任何 Electron 时只提示、不失败。
-
-### 改进
-
-- **启动器自动选最高版本**：`electron45 → electron44 → … → electron39` 依次探测
-  （PATH 上的 `electronNN`/`electron-NN`、`/usr/lib/electronNN/electron`、
-  `/usr/lib64`、`/usr/local/lib`、`/opt`），全都没有再退到 `electron` /
-  `nodejs-electron`；支持 `DSH_ELECTRON_BIN` 强制指定。
-- 三种内置 Electron 的格式（AppImage / deb / rpm）统一升级到 **Electron 45.2.3**，
-  与 `electron45` 包同源。
-
-### 测试
-
-- **Electron 39 → 45 逐版本实机启动**：全部输出 `dsh web`（明细见
-  `docs/COMPAT-TOOLCHAIN.md` 的版本矩阵）。
-- 双架构 8 个包全部重出，x64 四种格式逐个解包启动实测通过。
-
-## [3.3.0] — 2026-11-07 — Electron 45 运行时包 + 工具链升级测试
-
-新增 `electron45` Arch 包，并把 `pkg.tar.zst` 的 Electron 依赖从笼统的 `electron`
-改为 `electron45`（带完整回退链）。同轮做了 pnpm / npm / Node / Python 的升级实测，
-结论见 `docs/COMPAT-TOOLCHAIN.md`。
+## [3.3.0] — 2026-11-07 — 工具链升级与 Electron 45 支持
 
 ### 新增
 
-- `scripts/build-electron-pkg.sh`：把 Electron 官方 linux 预编译包打成 Arch 包
-  `electron45`（`/usr/lib/electron45` + `/usr/bin/electron45`，`chrome-sandbox` 4755，
-  `provides = electron45, electron`）。x86_64 93 MB / aarch64 92 MB。
-- `scripts/swap-electron.sh`：只替换应用树的 Electron 骨架（保留 `resources/app`、
-  `resources/runtime`、托盘图标），换运行时不必重跑装配。
-- `docs/COMPAT-TOOLCHAIN.md`：Electron 45.2.3 / Node 26.13.0 / pnpm 12.18.0 /
-  npm 12.2.2 / Python 3.15.2 的逐项实测记录。
+- `scripts/build-electron-pkg.sh`：把官方 Electron 打包成 Arch 运行时包。
+- `scripts/swap-electron.sh`：只替换 Electron 骨架，保留应用与运行时。
+- `docs/COMPAT-TOOLCHAIN.md`：Electron、Node、pnpm、Python 的升级实测记录。
 
 ### 修复
 
-- **pkg.tar.zst 不认 electron45**：`.PKGINFO` 原写 `depend = electron`，启动器搜索链
-  也没有 `electron45`，装了 45 运行时用不上。现改为 `depend = electron45`，
-  搜索顺序 `electron45 → electron → electron44/43/42/41/40/39 → nodejs-electron`，
-  `/usr/lib/electron45/electron` 提到路径列表首位；发行版 Electron 仍可通过
-  `optdepend` 满足。
-- **CLI 入口在 Linux 上必然失效**：`runtime/cli/bin/dsh` 是 macOS 专用
-  （`$resources/../MacOS/DeepSeek Harness`、`app.asar/dsh/...`）。`pkg.tar.zst`
-  打包时重写为按系统查找 Electron + `app/dsh` 直连，实测 `dsh --version` 输出
-  `0.2.2-rc.1`。
-- **`ZSTD_OPTS` / `ZSTD_LEVEL` 未定义**：脚本单独运行在 `set -u` 下直接
-  `unbound variable`（deb、pkg.tar.zst 两处都用到），历史构建靠外部环境变量掩盖。
-  现在脚本内自带默认值。
-- **只能整包构建**：新增 `FORMATS`（`deb,pkgtar,rpm,appimage` 子集）与 `DSH_OUT`
-  （产物目录），验证单个格式不必再跑 1.3 GB 的 AppImage。
+- `.pkg.tar.zst` 依赖 `electron` 改为可用的版本探测链。
+- 修正 Linux 下失效的 CLI 入口。
+- 补上 `ZSTD_OPTS` / `ZSTD_LEVEL` 默认值，并支持 `FORMATS` / `DSH_OUT` 局部构建。
 
-### 测试
+---
 
-- Electron 45.2.3：9 个原生模块全部加载（ABI 150 / Node 24.22.2 / V8
-  15.6.75.27-electron.0），四预设 `broken=(无)`，托盘图 32×32 非空。
-- 指纹补丁不需要改：符号定位的 `Matches(...)` 在 45 下仍唯一命中 `@0x1808f`。
-- `pkg.tar.zst` 按真实安装布局（`/usr/lib` + `/usr/bin`）落盘后，GUI 出
-  `dsh web`、CLI 出版本号；移除 `electron45` 只留 `electron` 时启动器自动回退，同样正常。
+## [3.2.0] — 2026-10-31 — 跟进上游 `0.2.1-rc.5`
 
-## [3.2.0] — 2026-10-31 — 随上游重建 `0.2.1-rc.5`
+- 应用载荷升级到 `0.2.1-rc.5`，重建双架构 8 个产物。
+- 构建脚本改为从 `runtime.json` 自动读取版本号。
+- 四格式统一使用 zstd 压缩。
 
-上游从 `0.2.1-rc.2` 升级到 **0.2.1-rc.5**，整套 Linux 移植随之重建。
-产 x86_64 与 aarch64 各 4 种格式，共 8 个产物。
-
-### 上游变化
-
-- 应用包 `@deepseek-ai/dsh-desktop` **0.2.1-rc.2 → 0.2.1-rc.5**
-- 全部原生模块版本随上游对齐（`dsh-sandbox-windows-acl`、`dsh-sandbox-local` 等均为 rc.5）
-- 运行时不变：Electron 44.7.0 / Node 24.21.0 / Python 3.12.14 / pnpm 11.28.5
-- 补丁全部适用：`patch-main`（14 项）、`patch-titlebar`、`patch-mac-chrome`、
-  `patch-fingerprint`（符号定位，x64 `Matches@0x1808f → b8010000` ✓）
-
-### 两个 Linux 修复的回归验证（全部通过）
-
-| 修复 | 验证方式 | 结果 |
-|---|---|---|
-| **Agent 预设** | 加载真实 desktop profile 调 `agentPresets.list()` | standard/ptc/minimal/cordis 全部 `broken=(无)` |
-| **托盘图标** | `nativeImage.createFromPath(resources/tray.png)` 后构造 `Tray` | `isEmpty=false`、32×32，图标可见 |
-
-### 结构校验
-
-- `sha256sum -c SHA256SUMS.txt`：**8/8 通过**
-- 四格式压缩：deb `data.tar.zst`、rpm `zstd(19)`、pkg `Zstandard`、AppImage squashfs `compression=6`
-- 架构纯度：x64 包无 arm64 残留、arm64 包无 x64 残留（各抽查 60 个 `.node`）
-- AppImage `--appimage-extract` 正常
-
-### 产物体积
-
-| 格式 | x86_64 | aarch64 |
-|---|---|---|
-| AppImage | 287.5 MB | 282.0 MB |
-| bundled.deb | 258.8 MB | 252.1 MB |
-| rpm | 273.8 MB | 268.4 MB |
-| pkg.tar.zst | 169.6 MB | 163.4 MB |
+---
 
 ## [3.1.0] — 2026-10-25 — 修复 Agent 预设与托盘图标
 
-上游从 `0.2.0-rc.2` 升级到 **0.2.1-rc.2**。产出 x86_64 与 aarch64 各 4 种格式，共 8 个产物
-（不再提供 `system.deb`）。
+### 修复
 
-### 压缩：四种格式统一改为 zstd
-
-| 格式 | 之前 | 现在 |
-|---|---|---|
-| `.deb` | `data.tar.xz`（xz 默认 -6） | `data.tar.zst`（zstd -19 --long=27） |
-| `.rpm` | `_binary_payload w6.xzdio` | `_binary_payload w19.zstdio` |
-| `.pkg.tar.zst` | `zstd -19 -T4` | `zstd -19 -T0 --long=27` |
-| `.AppImage` | squashfs zstd L19、`-b 1M` | 增加 `-Xdict-size 100%`、`processors 0` |
-
-> rpm 原先强制 `w6.xzdio`，**低于** rpm 6 的默认 `w19.zstdio`，属于性能倒退，已修正。
-
-压缩参数抽成 `build-packages.sh` 顶部常量 `ZSTD_LEVEL` / `ZSTD_OPTS`，四处引用同一来源。
-
-#### 最低系统要求（已逐条查证）
-
-| 格式 | 要求 | 不支持 |
-|---|---|---|
-| deb | Ubuntu **21.04+**（dpkg 1.20.9ubuntu1+）；Debian **12+**（dpkg 1.21.18+） | **Debian 11 及更早**、Ubuntu 20.04 及更早 |
-| rpm | `rpm >= 4.14`（Fedora 31+ / openSUSE Leap 15.3+） | 更早版本报 `Unsupported payload compressor` |
-| pkg.tar.zst | pacman 5.x+ | — |
-| AppImage | squashfs-tools 4.4+ | — |
-
-> **Ubuntu 与 Debian 的 zstd 支持不同步，不能按 dpkg 版本号统一判断。**
-> - 上游 Debian 在 **1.21.18** 引入：`libdpkg: Add zstd support for .deb archives.
->   Closes: #892664`
-> - Ubuntu **21.04（hirsute）** 就已通过自己的 patch 引入：
->   `dpkg 1.20.9ubuntu1` 的 `Add Zstd compression and decompression support for
->   binary packages`；并在 `1.21.1ubuntu1`（jammy）把默认压缩从 xz 改为 zstd
->   （LP: #1923845）
->
-> 因此 Ubuntu 22.04（dpkg 1.21.1ubuntu2）**可以**安装 zstd 压缩的 deb，
-> 而 Debian 11（dpkg 1.20.13）**不能**。
-
-### 修正：三处版本号硬编码
-
-| 位置 | 之前 | 影响 |
-|---|---|---|
-| rpm 文件名 | `deepseek-harness-0.2.0-0.rc2.*.rpm` | 产物名字与实际版本不符 |
-| AppImage 文件名 | `DeepSeek-Harness-0.2.0-rc.2-*.AppImage` | 同上 |
-| rpm spec | `Version: 0.2.0` / `Release: 0.rc2` | **rpm 把自己标成 0.2.0**，与 0.2.1-rc.2 不符 |
-
-现在统一由 `VER` 派生：`RPM_VERSION=0.2.1`、`RPM_RELEASE=0.rc2`、`RPMVER=0.2.1-0.rc2.<arch>`。
-
-### 修正：`patch-fingerprint.py` 改为按 ELF 符号定位
-
-旧实现用硬编码偏移，偏移不匹配时回退到「序言扫描 + 取最近候选」。
-在 0.2.1 的新 addon（`node-addon-require-builtin` 0.1.9）上，该扫描命中 **233 个无关函数**，
-最终把 `0x1e174` 当成 `Matches`（真实位于 `0x1e1e4`），**静默损坏二进制却报告成功**。
-
-现解析 ELF 符号表定位 `MatchesERKNS2_19ElectronProfileSpecE`，
-找不到唯一符号即**拒绝打补丁**。已实测 x64/arm64 双架构、幂等性、以及对非目标文件的拒绝行为。
-
-### 修正：`patch-main.py` 适配 0.2.1 的 pnpm 布局
-
-pnpm 从 `runtime/pnpm/` 移至 `runtime/primary-runtime/dependencies/pnpm/`。
-新增 `sub_optional()` 容忍跨版本的二选一锚点（两种布局各匹配其一，缺另一个不算错误）。
-0.2.0 与 0.2.1 两版应用树均已实测通过。
-
-### 新增：裁剪运行时冗余（`trim-app-tree.sh`）
-
-在四种打包路径复制应用树后统一调用，减少解包后占用实测 **94.9 MB**（1167.1 → 1072.3 MB）。
-
-裁剪项及依据：
-
-| 项 | 依据 |
-|---|---|
-| `node/lib/node_modules/npm` + `corepack` | 应用只调用 pnpm，`main.js` 中 0 处引用 npm |
-| `node/share` | man 手册 + gdb/lldb 脚本，运行期不读取 |
-| `node/include/node/openssl/archs` | 21 个平台变体中只保留本架构 |
-| python `idlelib`/`tkinter`/`turtledemo` | GUI 组件，桌面应用不启动 |
-| python `ensurepip`/`pip`/`site-packages/pip` | 运行期不安装 Python 包（站点包已预置） |
-| python `lib2to3`/`pydoc_data` | 已废弃 / 文档数据 |
-| `dsh-sandbox-windows-acl` | Windows 专用 |
-| `LICENSES.chromium.html` | 合规文件，非运行时资源 |
-
-**刻意未裁剪**：
-- `node/include/node` 的核心头文件 —— pnpm 内置 `node-gyp`，用户安装带原生扩展的插件时
-  需要它们；删掉会破坏该功能，而只省约 3 MB。
-- `pnpm/dist` —— 运行期插件安装的实际实现。
-
-> **关于压缩后收益的诚实说明**：上述内容多为文本/头文件，xz 压缩率约 17:1
-> （实测 100.4 MB → 6.0 MB）。在 257 MB 的成品 deb 中，下载体积仅减少约 0.2 MB。
-> 成品体积主要由 Electron(62MB) / app 依赖(66MB) / python(53MB) / node(28MB) 决定，
-> 均为功能必需。**本改动的实际价值是减少解包后磁盘占用，而非显著缩小下载包。**
-
-安全性验证：
-- 裁剪后 Python 科学栈正常（numpy 2.3.5 / pandas / PIL / lxml / docx / pptx / openpyxl 均可导入）
-- node v24.21.0 正常；pnpm 11.28.5 正常，且 `pnpm add is-odd` 实际安装成功
-- 应用启动对照实验：裁剪树与未裁剪树日志完全一致（均为缺登录凭据导致的
-  `connection (required) missing credentials`），证明裁剪未引入退化
-- 脚本幂等
-
-### 修复 — Linux 托盘图标不显示（空白托盘）
-
-**症状**：托盘栏里有一个位置，但**什么都不显示**（不是没有托盘，是图标空白）。
-
-**根因**：补丁把 Linux 的托盘图标指向 `desktopResourcesRoot()/tray.png`，
-但**这个文件从来不存在**：
-
-- 上游打包分支读的是 `tray.ico`，而官方 dmg 的 `Resources/` 只有
-  `icon.png` / `icon.icns`，没有 `tray.ico`；
-- 移植时也从未把任何图标放进 `resources/` 根 —— 实测成品 deb 的
-  `resources/` 下只有 `app/`、`runtime/`、`image-worker/` 三个目录，
-  连 `icon.png` 都没有（应用图标只装到了 `usr/share/icons/hicolor/`）。
-
-关键在于**失败是静默的**：`nativeImage.createFromPath()` 对不存在的文件
-返回**空图**而不是抛错：
-
-```
-① createFromPath(不存在)   → isEmpty=true  size={"width":0,"height":0}
-   new Tray(空图)           → 成功（但图标不可见）
-② createFromPath(32x32 PNG) → isEmpty=false size={"width":32,"height":32}
-   new Tray(有效图)         → 成功
-```
-
-所以 `new Tray(...)` 不抛错、托盘被创建，只是渲染不出任何东西。
-
-**修复**：
-1. `build-packages.sh` 把 `icons/32x32/deepseek-harness.png` 装为
-   每个构建树的 `resources/tray.png`（约 2.2 KB）。
-2. `patch-main.py` 的托盘路径改为**回退链**：
-   `tray.png` → `icon.png` → 开发模式路径，全部用 `existsSync()` 判定，
-   找不到才回落到 `tray.png`。即便图标文件意外缺失，也不会再出现
-   "创建成功但不可见"的空白托盘。
-
-实测（Electron 真实构造 Tray）：
-```
-路径: /usr/lib/deepseek-harness/resources/tray.png
-isEmpty: false | size: {"width":32,"height":32}
-Tray 创建: 成功 | 图像非空: true
-```
-
-> 与「无托盘时关窗直接退出」那条修复是配套的：托盘真正可用后，
-> 关窗隐藏窗口 + 托盘召回才是完整闭环。
-
-### 修复 — Agent 预设「加载失败」（非个例，四个模式中三个失效）
-
-**症状**：设置 → Agent 预设页，标准模式 / PTC 模式 / 创造模式 三个卡片都带红色
-「加载失败」徽章，只有「极简模式」正常。tooltip 显示各自的行在等一个运行时服务：
-
-```
-standard:  tool-bash (@deepseek-ai/dsh-tool-bash): waiting for shell
-ptc:       workflow-ptc (@deepseek-ai/dsh-workflow-ptc): waiting for ptcRuntime
-cordis:    tool-workflow (@deepseek-ai/dsh-tool-workflow): waiting for workflowEngine
-```
-
-**根因**：上一轮「裁剪运行时冗余」把 `@deepseek-ai/dsh-sandbox-windows-acl` 当成
-「Windows 专用、Linux 不使用」删掉了。但 `dsh-sandbox-local` 在**顶层静态 import** 它：
-
-```js
-// dsh-sandbox-local/lib/index.js:9
-import { AclWriteGrant, assertTempRootOutsideWorkspace, ... }
-  from "@deepseek-ai/dsh-sandbox-windows-acl";
-```
-
-ESM 的静态 import 无法按平台条件化，Linux 上同样会被求值。包一缺失：
-
-```
-sandbox (@deepseek-ai/dsh-sandbox-local): failed to import:
-  Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@deepseek-ai/dsh-sandbox-windows-acl'
-bash-sandbox (@deepseek-ai/dsh-bash-sandbox): pending (waiting for service: sandbox)
-permission (@deepseek-ai/dsh-permission-presets): pending (waiting for service: shell)
-ptc-runtime (@deepseek-ai/dsh-ptc-runtime-node): pending (waiting for service: sandbox)
-```
-
-`sandbox` 服务加载失败 → `shell` / `ptcRuntime` / `workflowEngine` 全部缺失 →
-预设挂载后审计出 pending 行 → 被判定为 broken。
-「极简模式」不含依赖这些服务的插件，因此独善其身 —— 与症状完全吻合。
-
-**对照实验**（同一环境，只切换该包是否存在）：
-
-| | standard | ptc | minimal | cordis |
-|---|---|---|---|---|
-| 移除该包 | `waiting for shell` | `waiting for shell` | 正常 | `waiting for shell` |
-| 装回该包 | 正常 | 正常 | 正常 | 正常 |
-
-**修复**：
-1. `trim-app-tree.sh` 不再删除该包，并写明原因。
-2. `swap-native-linux.sh` 增加**自动补装**：若该包缺失，按 `dsh-sandbox-local` 的
-   版本号从 npm 取回（实测自动装上 `0.2.1-rc.2`，与 app 版本对齐）。
-3. `trim-app-tree.sh` 末尾增加**静态 import 完整性自检**：解析所有
-   `@deepseek-ai` 包的顶层静态 import，核对目标是否仍可解析，缺失则非零退出。
-   自检在本次修复后的树上通过（107 个目标全部可解析），
-   故意删掉 `dsh-shell` 时能立即报出缺失及其被谁引用。
-
-代价：该包 72 KB（压缩后几乎不占体积）。
-
-### 新增：`swap-native-linux.sh`（双架构平台替换）
-
-把 darwin 原生包替换为对应的 Linux 包（x64 / arm64）。应用按平台 `require.resolve`，
-darwin 包永不加载，但**对应 Linux 包必须存在**，否则 require 失败、Host 启动中止。
-脚本同时清理 `*:com.apple.provenance`，并对全部 `.node`/`.so` 做架构核验（不符即非零退出）。
-
-### 新增：`docs/AGENT_PROMPT.md`
-
-交给新 Agent 的完整构建 + 验证提示词，覆盖前置依赖版本表、补丁顺序与原因、
-压缩要求、兼容性声明、已知坑、验证清单与汇报格式。
+- 裁剪脚本误删 `dsh-sandbox-windows-acl`，导致标准/PTC/创造预设「加载失败」。
+  该包是静态 import 依赖，现已保留并加自检。
+- 托盘图标不显示：补 `resources/tray.png`，并在缺失时回退。
 
 ---
-## [2.0.0] — 2026-10-01 — 适配 `0.2.0-rc.2`
 
-上游从 `0.1.7-rc.1` 升级到 **0.2.0-rc.2**。本次以官方 **macOS arm64** dmg 为唯一载荷来源
-（用户已删除先前的 Windows 安装包），重新完成整套 Linux 移植，产出 x86_64 与 aarch64
-各 5 种格式，共 10 个产物。
+## [2.0.0] — 2026-10-01 — 适配上游 `0.2.0-rc.2`
 
-> 上一版（1.0.0，基于 0.1.7-rc.1）的构建产物与下载缓存已被用户全部删除，
-> 本次为完整重建：Electron、Node、Python、全部原生模块、打包工具，以及此前的
-> 补丁与 image-worker 方案，均按新版本重新实现并重新验证。
-
-### 新增
-
-- **产物 10 个**（体积为 MiB，1 MiB = 1048576 B）：
-
-  | 格式 | x86_64 | aarch64 |
-  |---|---|---|
-  | AppImage | 291 | 282 |
-  | `bundled.deb` | 255 | 238 |
-  | `system.deb` | **167** | **157** |
-  | `pkg.tar.zst` / `.gz` | **181** | **172** |
-  | `.rpm` | 255 | 239 |
-
-- **支持 0.2.0 新增的 `runtime/cli`**（官方新增的 CLI 安装功能）：
-  其 macOS 启动器引用了 `../MacOS/DeepSeek Harness` 与 `resources/app.asar/...`，
-  已改写为 Linux 版本，可自动定位发行版 electron 或内置二进制，
-  再以 `ELECTRON_RUN_AS_NODE` 运行 `dsh-desktop-host/lib/cli.js`。
-
-
-### 修复 — Linux 图片附件崩溃（Sharp / libvips 段错误）
-
-与 0.1.7 同源问题，方案不变（进程隔离），按新版重新实现：
-
-```
-resources/
-├── app/dsh/node_modules/sharp/     替身包：只转发调用，不含原生库
-└── image-worker/
-    ├── client.cjs                  Sharp API 兼容层（记录链式调用 → 转发）
-    ├── worker.cjs                  在独立 Node 进程中重放并执行 libvips 调用
-    └── worker-modules/node_modules/ 私有依赖闭包（约 20 MB / 120 文件）
-```
-
-- worker 跑在载荷自带的 standalone Node 上，不含 Chromium/GTK 符号空间；
-- 私有依赖闭包置于 asar 之外（standalone Node 无 asar 支持）；
-- 子进程环境清理为 `PATH`/`HOME`/`LANG`/`TMPDIR`；
-- worker 崩溃只影响当次操作，客户端自动重启，连续 3 次失败后熔断。
-
-实测：`/proc/self/maps` 全程无 libvips；三条 attachment 路径与 jpeg / png(alpha) /
-webp / gif 四种类型全部通过；坏数据抛错而非崩溃。
-
-### 修复 — Linux 托盘
-
-四个独立问题（与上一版同类，按新版重新定位）：
-
-| 问题 | 修复 |
-|---|---|
-| Electron 44.0.0 的 Linux 托盘回归 | 内置 Electron 升级至 44.4.5 |
-| 托盘仅 win32 时创建 | 放行 Linux |
-| 图标为 Windows `.ico` | 改用 PNG `tray.png`（32×32） |
-| 无托盘时关窗隐藏 → 失联 | 无托盘时直接退出 |
-
-实测：真实 Electron 主进程构造 `Tray` 成功。
-
-### 修复 — Linux 原生标题栏
-
-上游仅给 win32（`titleBarStyle:"hidden"` + `titleBarOverlay`）与 darwin（`hiddenInset`）
-配置了自绘标题栏，Linux 分支为空，导致原生标题栏与应用头双层叠加。
-因渲染层无拖拽区、preload 无窗口控制 API，裸 `hidden` 会得到无法拖动/关闭的窗口，
-故同样走 `titleBarOverlay`（GTK 绘制系统按钮、标题区可拖动），主窗口 40px、欢迎窗口 42px。
-
-### 新增 — macOS 风格窗口装饰（左置交通灯 + 侧栏毛玻璃）
-
-上游只为 win32 与 darwin 配置窗口装饰，Linux 分支为空；本次让 Linux 与 macOS 视觉对齐：
-
-- **三大金刚键强制左置**：改用应用自身的「自绘标题栏」模式
-  （`html[data-windows-titlebar]`，原本仅 Windows 启用）获得 48px 顶部预留带、
-  自动拖拽区与页面内边距，再按 macOS 常量 `trafficLightPosition {x:16, y:18}`
-  在左上角绘制红黄绿交通灯；点击经新增 IPC（`dsh-desktop:linux-window-control`）
-  执行最小化 / 最大化切换 / 关闭。移除上一版把按钮放到右上角的 `titleBarOverlay`。
-- **侧栏毛玻璃**：复刻应用自身 `[data-platform=darwin]` 的材质配方 ——
-  `color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent)` 叠竖向渐变，
-  再补 `backdrop-filter: blur(40px) saturate(150%)`；同时清掉 `body` 与侧栏内层
-  `._3WPZCG_root` 的不透明底（后者正是先前"看不到透明"的原因）。
-- **不改 `data-platform`**：该属性同时决定快捷键 `primary` → Meta(⌘) 还是 Control，
-  伪造 darwin 会破坏 Linux 快捷键语义，故只复刻材质数值。
-- **窗口层**：主窗口与欢迎窗改为 `titleBarStyle:"hidden"` + `transparent:true`
-  （欢迎窗额外 `frame:false`），使半透明真正透出桌面。
-- **Wayland 兜底**：niri 等合成器不实现 `isMaximized()`，最大化切换改为
-  「已铺满工作区即视为最大化」，避免点了没反应。
-
-验证：侧栏像素实测 `srgba(28,28,28,0.5)`（真 50% 透明）、内容区 `alpha=1`；
-拖拽带 48px 且 `app-region:drag`；交通灯 (16,18) 三色正确。
-
-### 修复 — deb 的 control 文件存在空行，导致 dpkg/apt 拒绝安装
-
-**（社区反馈：[issue #1](https://github.com/macOS-Terminal/deepseek-harness-desktop-linux/issues/1)）**
-
-现象：`dpkg -i` / `apt install ./*.deb` 报控制文件格式错误，无法安装。
-
-根因在 `build-packages.sh` 生成 `DEBIAN/control` 的那段 heredoc：
-
-```sh
-Depends: $deps
-${rec:+Recommends: $rec}      # ← bundled 变体下 rec 为空，这一行展开成空行
-Homepage: https://harness.deepseek.com
-```
-
-`${rec:+...}` 在 `rec` 未设置时展开为**空字符串**，但模板里该行本身还在，
-于是输出一个真正的空行。而 Debian 控制文件的语法中，**空行是段落分隔符** ——
-dpkg 会把后面的 `Homepage:` / `Description:` 当成「第二个包」的起始，
-而该段缺少必需的 `Package:` / `Version:`，解析随即失败。
-
-这一点已用严格的分段解析器复现并验证：
-
-| 版本 | 解析出的段落数 | 结果 |
-|---|---|---|
-| 修复前 | **2**（Homepage 起被当作新包） | ✗ 非法 |
-| 修复后 · bundled | 1 | ✓ 合法 |
-| 修复后 · system | 1 | ✓ 合法 |
-
-修复：把可选字段先拼成变量，为空时**整行不输出**（而不是留空行），
-同时保留 `Recommends` 行尾换行，避免与下一字段粘连：
-
-```sh
-local recommends_line=""
-if [ -n "$rec" ]; then
-  recommends_line="Recommends: $rec
-"
-fi
-...
-${recommends_line}Homepage: https://harness.deepseek.com
-```
-
-> 注意：`system` 变体因为有 `Recommends` 字段，原本不会触发该问题；
-> 只有 **`bundled` 变体**（`rec` 为空）会产生空行 —— 这也解释了为何只有部分用户遇到。
-
-### 修复 — 采纳社区 PR #2 的三项修正，并为 KDE 增加不透明回退
-
-（对应 [PR #2](https://github.com/macOS-Terminal/deepseek-harness-desktop-linux/pull/2) 提出的问题）
-
-**1. `[class*="_fade"]` 选择器过宽，误伤进程步骤的淡出**
-
-应用的列表淡出类不止一个：
-
-| 类名 | 来源 | 绘制方式 |
-|---|---|---|
-| `_7514NG_fade` | workspace（侧栏列表） | `background` 渐变 |
-| `TXqvFW_fadeTop/Bottom`、`JXrxFq_fadeTop/Bottom` | chat（进程步骤） | **仅** `mask-image` |
-
-原规则同时命中这 5 个类，给只该用遮罩的元素强加了背景渐变。
-
-修复：限定到侧栏 —— `html[data-dsh-mac-chrome] [class*="_sidebarCol"] [class*="_fade"]`。
-已确认 `_7514NG_fade` 位于侧栏内（layout 的 `sidebarCol` 以 `children: sidebar` 渲染
-`renderSlot("sidebar")`，正是 workspace 注册的插槽），因此限定后仍能命中目标。
-
-实测（Chromium 内加载真实注入的 CSS）：
-
-| 元素 | 修复前 | 修复后 |
-|---|---|---|
-| 侧栏 fade | 渐变 | `linear-gradient(rgba(0,0,0,0), color(srgb …))` ✓ 修复保留 |
-| 进程步骤 fade | 被加上 `linear-gradient(…, rgb(200,30,30))` | **`none`** ✓ 不再误伤 |
-
-**2. 欢迎页样式被 CSP 丢弃**
-
-欢迎页的 CSP 为 `style-src 'self'`，不含 `'unsafe-inline'`。实测该策略下
-`<style>` 节点**能插入但规则不生效**：
-
-```
-PROBE_BEFORE_INSERT {"styleTags":1,"inlineApplied":"rgba(0, 0, 0, 0)"}   ← 节点在，样式没生效
-PROBE_AFTER_INSERTCSS bg=rgb(1, 2, 3)                                    ← insertCSS 有效
-```
-
-修复：样式改由 `webContents.insertCSS()` 注入（经 `chrome-style` IPC 送达），
-不受页面 `style-src` 约束；`preload` 侧不再创建 `<style>` 节点。
-
-**3. 侧栏折叠按钮存在废弃规则与声明顺序缺陷**
-
-- `preload-welcome.cjs` 残留 3 条旧的 `left: 88px` 规则（已被 128px 规则以更高
-  特异性覆盖，属死代码；已删除以免误导维护）；
-- 更严重的是 `observedSidebar` / `sidebarObserver` 声明位于 `apply()` **首次调用之后**，
-  `const`/`let` 的暂时性死区导致首次 `apply()` 抛 `ReferenceError`，
-  **整块 chrome 注入失效**（交通灯与 vibrancy 层都不创建）。实测捕获到：
-
-  ```
-  CONSOLE Uncaught ReferenceError: sidebarObserver is not defined
-  STATE {"bodyKids":["root"],"hasLights":false,"hasVib":false}
-  ```
-
-  修复：把两个声明前置到 `apply` 定义之前。修复后：
-
-  ```
-  IPC_CALLS [{"action":"chrome-style","cssLen":7521}]
-  ATTRS {"mac":true,"titlebar":true,"lights":true,"vib":true}
-  ```
-
-**4. KDE 会话下侧栏改为不透明（设计取舍）**
-
-PR 主张默认不透明、显式开启才透明。本移植保留**透明为默认**（符合 macOS 观感），
-仅在检测到 KDE 会话时回退为不透明 —— KDE 的 X11 合成对半透明窗口支持较差、
-Wayland 下模糊按窗口生效，半透明侧栏易显得发灰或不可读。
-
-检测在 preload 内完成（已实测 sandbox preload 可读 `process.env`，
-`XDG_CURRENT_DESKTOP` 等 91 个变量可见），命中 `kde` / `plasma` 或 `KDE_FULL_SESSION`
-时设置 `data-dsh-opaque-sidebar`，对应 CSS 把侧栏还原为 `--dsw-specific-sidebar-fill`
-并隐藏 vibrancy 层。
-
-实测（Chromium 内验证规则匹配）：
-```
-KDECHECK {"kdeRuleCount":4,"sidebarMatchedUnderKde":true,
-          "sample":"html[data-dsh-mac-chrome][data-dsh-opaque-sidebar] [class*=\"_sidebarCol\"] { background: var(--ds…"}
-```
-
-> 说明：PR 另有「最大化即全屏」的回退（删除 `syncTilingFullscreen`）和整套
-> 自动构建工具链，本次**未采纳** —— 前者在 niri 等平铺合成器上会重现
-> 「全屏不隐藏交通灯」（本机实测 niri 全屏后 `isFullScreen()=false`），
-> 后者属于新增能力而非缺陷修复，留待单独评估。
-
-### 修复 — 折叠侧栏时新建按钮与交通灯重叠（用户实测反馈）
-
-折叠侧栏后，应用的导轨按钮位置是**写死**的：
-
-```css
-[data-windows-titlebar] ._3WPZCG_collapsed ._3WPZCG_newSession {
-  position: fixed; left: 48px;
-}
-```
-
-这是为 Windows 设计的 —— Windows 的窗口按钮在**右侧**，左侧 12px 起是空的，
-所以从 48px 开始排「新建」「展开」两个圆钮正合适。
-但本移植把交通灯放在左侧 16–68px，于是折叠态的新建按钮（48px）正好压在灯上；
-全屏时灯会隐藏，所以那个状态下看不出问题 —— 这正是「窗口模式重叠、全屏正常」的原因。
-
-修复：**仅在窗口模式**把折叠态两个导轨按钮右移（新建 `88px`、展开 `128px`），
-避开 16–68px 的灯区；**全屏时交通灯已隐藏，不需要让位**，因此保留应用原本的
-leading-edge 位置（新建 `48px`、展开 `12px`），维持原生观感。
-展开态的侧栏 toggle 同样只在窗口模式贴右缘（`--dsh-linux-toggle-left`），全屏回 `12px`。
-
-实测（真实矩形相交判定）：
-
-| 状态 | 交通灯 | 新建按钮 | 展开按钮 | 矩形相交 |
-|---|---|---|---|---|
-| 展开·窗口 | 16–68 | 12,102（整行） | 240 | 否 |
-| 折叠·窗口 | 16–68 | **88** | **128** | **否** |
-| 折叠·全屏 | 隐藏 | **48** | **12** | 否 |
-| 展开·全屏 | 隐藏 | 整行 | **12** | 否 |
-
-同时把失焦态的交通灯从「变灰」改为「降饱和 + 压暗」（`saturate(.55) brightness(.72)`），
-与 macOS 行为一致 —— 后者窗口失焦时灯仍保留色相，只是变暗。
-
-### 修复 — 真全屏不生效 / 侧栏底部暗条 / 登录页无文字（用户实测反馈）
-
-**1. 真全屏时交通灯不隐藏、按钮重叠**
-
-两层原因，缺一不可：
-
-- 主进程把 Linux 排除在全屏事件之外：`if (process.platform === "darwin" || process.platform === "win32")`
-  → 从未注册 `enter-full-screen` / `maximize` 监听，`data-fullscreen` 永不置位；
-- preload 的监听同样早退：`syncWindowFullscreen()` 里的
-  `if (process.platform !== "darwin" && process.platform !== "win32") return;`
-  → 即使主进程发了事件，渲染层也收不到。
-
-此外，**平铺合成器（niri / Hyprland / sway）根本不向 Electron 报告全屏**：
-实测窗口铺满 2560×1440 时 `isFullScreen()` 与 `isMaximized()` 均为 false。
-因此在渲染层补了一个视口自检：视口覆盖屏幕可用区域即视为全屏，并与主进程状态取并集，
-`resize` 时重新计算。
-
-实测：窗口态 `data-fullscreen=false`、交通灯显示、折叠键 240px；
-铺满屏幕后 `true`、交通灯 `display:none`、折叠键 12px；还原后全部复原，全程无重叠。
-
-**2. 侧栏底部出现不透明暗条**
-
-应用自身有一个列表滚动淡出层：
-
-```css
-._7514NG_fade { background: linear-gradient(to bottom, transparent, var(--dsw-specific-sidebar-fill)); }
-```
-
-它渐变到 `--dsw-specific-sidebar-fill`（不透明的 `rgb(27,27,28)`）。侧栏改为半透明后，
-这个终点色不再匹配，于是底部露出一条实心暗带。修法不是在 fade 上打补丁，
-而是让 `--dsh-linux-sidebar-tint` 承载半透明值并让 fade 使用它，
-这样任何引用该变量的组件都会自动跟随。
-
-**3. 登录页文字全部消失**
-
-`preload-welcome.cjs` 中 `const VIBRANCY_ID` 被重复声明（`SyntaxError`），
-导致 preload 加载失败、页面拿不到 locale 数据，界面只剩空壳。
-已在两个 preload、两棵架构树中各去掉重复声明。
-
-### 修复 — 全屏与清晰度（用户实测反馈）
-
-三个问题，均已修复：
-
-**1. 侧栏文字/图标发灰、清晰度不足**
-
-初版把 `backdrop-filter` 加在侧栏元素上，使整棵侧栏子树参与模糊面合成，
-文字被混合到模糊层里，边缘发虚、对比度下降。
-
-修复：模糊层独立为 `#dsh-mac-vibrancy` 后，进一步把它移到 `#root` **之前**并设
-`z-index:-1`，让它真正位于整个 UI 之下；侧栏自身 `background:0 0` 且不再带
-`backdrop-filter`，文字重新落在独立合成层上。
-
-**2. 内容区左上角圆角造成空白缺口**
-
-应用为 Windows 无边框窗口加了 `[data-windows-titlebar] ._centerCol{border-radius:16px 0 0 0}`。
-我们复用该模式后，窗口铺满屏幕时这个圆角的外侧就是露出的空白（KDE Plasma 同样可见）。
-
-修复：`html[data-dsh-mac-chrome] [class*="_centerCol"]{border-radius:0}` —— 该圆角在
-无窗口装饰、铺满屏幕的场景下没有意义。
-
-**3. 全屏布局未对齐 macOS**
-
-应用自身已有 macOS 全屏规则（`[data-platform=darwin][data-fullscreen]`），
-但我们的 `data-windows-titlebar` 模式没有对应处理。
-
-修复：按 macOS 行为补两条 —— 全屏时**隐藏红黄绿交通灯**，折叠键回到左侧
-（`left:12px`），与应用的 darwin 全屏规则一致；退出全屏自动恢复。
-
-实测：`vibZ=-1` 且位于 `#root` 之前；`_centerCol` 圆角 `0px`；
-模拟全屏后交通灯 `display:none`、折叠键 `left=12`，退出后恢复 `flex` / `240`。
-
-### 修复 — 毛玻璃引入的两个回归（用户实测发现）
-
-初版把 `backdrop-filter` 直接加在侧栏元素上，触发了 `backdrop-filter` 的两个规范行为，
-造成两个可复现的故障，均已修复：
-
-| 现象 | 根因 | 修复 |
-|---|---|---|
-| 侧栏右缘出现一条缺口（截图里"中间缺一块"） | `backdrop-filter` 使其元素成为新的 backdrop root，配合 `_frame` 的 `overflow:hidden` 导致该区域合成被裁切 | 模糊不再放在侧栏上 |
-| **侧栏折叠后无法再展开**（按钮消失） | `backdrop-filter` 会让元素成为 `position:fixed` 后代的**包含块**并按自身 `overflow` 裁切。应用的折叠按钮本是 `position:fixed`，被改为相对侧栏定位；侧栏宽度收到 0 时按钮一起被裁掉 | 见下 |
-
-修复方式：把 `backdrop-filter`（连同半透明配色）**移到一个独立的背景层**
-`#dsh-mac-vibrancy`（`position:fixed; inset:0 auto 0 0; width:var(--dsh-linux-sidebar-width);
-pointer-events:none`），侧栏本身只保留 `background:0 0`。这样：
-
-- 模糊与色调的视觉效果保持不变（仍是应用自身的 darwin 配方）；
-- 不再有元素因 `backdrop-filter` 成为包含块，折叠按钮恢复视口级 fixed 定位；
-- 背景层 `pointer-events:none`，不拦截任何点击。
-
-同时让折叠态按钮停在 `left:88px`（避让左上交通灯；应用原本在 Windows 上给它的是
-`left:12px`，那会与交通灯重叠），展开态仍贴侧栏右缘。
-
-实测（CDP 逐点命中 + 尺寸断言）：
-
-| 状态 | 侧栏宽 | 折叠按钮 | 可点击（命中测试） | 模糊层 |
-|---|---|---|---|---|
-| 展开 | 280px | (240, 10) | ✓ | 280px / `blur(40px) saturate(1.5)` |
-| 折叠 | 0 | **(88, 10) 可见** | ✓ | 保持 |
-| 再次展开 | **280px** | (240, 10) | ✓ | 保持 |
-
-按钮的视口 y 坐标由 58 恢复为 10，证明包含块效应已消除；侧栏右缘逐点命中连续，缺口消失。
-
-### 修复 — 平台与系统 Electron 兼容
-
-- 平台白名单加入 `linux`；`x-client-platform` 上报 `desktop-linux`。
-- 原生模块全部替换为 linux 预编译产物（sharp / koffi / sherpa-onnx / ripgrep /
-  node-addon-require-builtin / node-addon-system(landlock) / node-pty / reflink），两架构各一套。
-- Office 引擎改用 `@deepseek-ai/libreoffice-kit-wasm@0.1.0`（Linux 走 WASM 回退）。
-- `runtime.json` 的 `platform`/`arch` 修正为 `linux` / `x64|arm64`。
-- `DSH_DESKTOP_RESOURCES_DIR` 覆盖 resources 根；`DSH_DESKTOP_FORCE_PACKAGED=1`
-  修正系统 Electron 下 `app.isPackaged` 为 false 的误判（共 12 处判定改用 helper）。
-- **V8 指纹门禁**：`node-addon-require-builtin` 只接受 Electron 43.0.0 / 44.0.0 /
-  45.0.0-alpha.6 的精确 V8 指纹，44.4.5 会被拒并导致 Host 启动失败
-  （`unsupported Electron runtime fingerprint`）。已对其匹配函数做二进制放宽：
-  x64 `0x17cdd`（`mov eax,1; ret`）、arm64 `0x1df14`（`mov w0,#1; ret`）。
-  三个 profile 的 ABI 字段为编译期常量、仅版本标签不同，放宽安全，无需降级 Electron。
-
-### 打包与元数据
-
-- 桌面项 `Name=DeepSeek Harness Desktop`（含中文名）、`Exec=deepseek-harness`、
-  16→512 hicolor 图标、`StartupWMClass`。
-- Arch 包名 `deepseek-harness-desktop`（避免顶掉 archlinuxcn 的 npm 版
-  `deepseek-harness`；两者零路径冲突，可共存）。
-- 移除 `app-update.yml`（官方无 Linux 更新源）。
-- `chrome-sandbox` setuid 由 deb `postinst` / rpm `%attr(4755)` / pacman `.INSTALL` 设置；
-  rpm 用 `%defattr(-,root,root,-)` 保留归一化权限；归档属主统一 `root:root`；
-  禁止 rpmbuild strip 厂商预编译二进制。
-- **本次主机环境为 NTFS（fuseblk），chmod 无效且一切文件显示为 0777**，
-  因此改为在 tmpfs 上暂存并按文件内容（ELF / `#!` / `.so` / `.node`）恢复权限后再打包。
-
-### 验证
-
-| 项目 | 结果 |
-|---|---|
-| x64 五种格式解包实测启动 | ✅ 5/5 |
-| Sharp 隔离（maps 无 libvips + 路径与类型覆盖） | ✅ |
-| 托盘（真实 Electron 主进程） | ✅ |
-| ARM64 node / python / sharp（qemu，取自成品 deb） | ✅ |
-| 架构审计（两树互无错位残留） | ✅ 0 处 |
-| 交通灯左置 + 侧栏透明（像素级验证 alpha=0.5） | ✅ |
-| 折叠按钮可见可点、折叠后可再次展开侧栏 | ✅ |
-| 侧栏右缘无缺口（逐点命中连续） | ✅ |
-| 文字清晰度（模糊层移到 #root 之前，侧栏不再带 filter） | ✅ |
-| 内容区圆角归零、全屏隐藏交通灯 + 折叠键靠左 | ✅ |
-| 真全屏（平铺合成器）检测：铺满屏幕即隐藏交通灯 | ✅ |
-| 侧栏底部淡出条跟随半透明底色、无实心暗带 | ✅ |
-| 折叠态导轨按钮避开交通灯（新建 88px / 展开 128px） | ✅ |
-| deb control 文件无空行（分段解析段落数=1） | ✅ |
-| fade 规则不误伤进程步骤（侧栏 fade 保留、chat fade 背景为 none） | ✅ |
-| 欢迎页样式经 insertCSS 生效（CSP style-src 'self' 下） | ✅ |
-| KDE 会话回退不透明侧栏（规则匹配验证） | ✅ |
-| 标题栏补丁存在于两架构包内 | ✅ 10/10 |
-| ARM64 node / python / sharp（qemu，取自成品 deb） | ✅ |
-| `sha256sum -c`（10 个包） | ✅ 10/10 |
-
-### 已知问题（非移植引入）
-
-- `dsh-connect-workbuddy@1.4.0` 字段名不匹配（读 `info.multimodal`，
-  而接口返回 `supportsImages`），导致 16/16 模型被算出 `inputModalities=["text"]`，
-  发图报 `session/agent-busy`（真因被包装）。macOS/Windows 同理。
-  规避：在设置中开启模型的图像开关。
+- 完成 Linux 平台移植：平台准入、原生模块替换、运行时装配。
+- 修复 Sharp/libvips 在 Electron 内的段错误，改为独立进程处理图片。
+- 实现 macOS 风格窗口装饰（左置交通灯、侧栏毛玻璃）。
+- 首次产出双架构、多格式安装包。
 
 ---
 
-## [1.0.0] — 2026-09-26 — 适配 `0.1.7-rc.1`
+## [1.0.0] — 2026-09-26 — 首个可用版本
 
-首个完整 Linux 移植版本（基于 Windows x64 安装包载荷），
-覆盖 x86_64 与 aarch64 各 5 种格式，并首次实现：
-
-- Sharp/libvips **进程隔离**方案（方案 A），解决 Linux 图片附件段错误；
-- Linux 托盘修复（Electron 44.0.0 → 44.4.5、win32 门禁放行、PNG 图标、无托盘退出兜底）；
-- 系统 Electron 兼容（`DSH_DESKTOP_RESOURCES_DIR`、`DSH_DESKTOP_FORCE_PACKAGED`、
-  V8 指纹放宽）；
-- 体积优化：Python 载荷 421 → 231 MB、Node 载荷 204 → 104 MB，压缩改用 xz / zstd。
-
-> 该版产物与缓存后续被用户删除，其补丁与方案已在 2.0.0 中按新版重新实现。
+- 从官方 macOS 包提取载荷，完成 Linux 打包流程验证。

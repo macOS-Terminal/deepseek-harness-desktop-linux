@@ -10,7 +10,18 @@
 set -euo pipefail
 B="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="${1:?用法: assemble-tree.sh <x64|arm64>}"
-DMG="$B/others/dmg/DeepSeek Harness 0.2.2-rc.1-arm64/DeepSeek Harness.app/Contents/Resources"
+# 上游目录名带版本号，每次升级都会变。自动取 others/dmg 下最新的一个，
+# 也可用 DSH_APP 显式指定（指向 .../DeepSeek Harness.app/Contents/Resources）。
+DMG="${DSH_APP:-}"
+if [ -z "$DMG" ]; then
+  # 按版本号排序（-V 处理 0.2.2-rc.3 这种），取最后一个
+  latest="$(find "$B/others/dmg" -maxdepth 1 -type d -name 'DeepSeek Harness *' 2>/dev/null \
+            | sort -V | tail -1)"
+  [ -n "$latest" ] || { echo "others/dmg 下没有 DeepSeek Harness 目录" >&2; exit 1; }
+  DMG="$latest/DeepSeek Harness.app/Contents/Resources"
+fi
+[ -f "$DMG/app.asar" ] || { echo "找不到 app.asar: $DMG" >&2; exit 1; }
+echo "  源包: $(basename "$(dirname "$(dirname "$(dirname "$DMG")")")")"
 case "$ARCH" in
   x64)   TREE=out-x64;   NODE_ARCH=x64;   PY_ARCH=x64;   PIP_PLAT="--platform manylinux_2_28_x86_64 --platform manylinux_2_27_x86_64" ;;
   arm64) TREE=out-arm64; NODE_ARCH=arm64; PY_ARCH=arm64; PIP_PLAT="--platform manylinux_2_28_aarch64 --platform manylinux_2_27_aarch64" ;;
@@ -32,12 +43,24 @@ say "2/6 放入应用载荷 resources/app"
 cp -a "$B/app-new/." "$OUT/resources/app/"
 # dmg 出来的 xattr 影子文件无用
 find "$OUT/resources/app" -name '*:com.apple.*' -delete 2>/dev/null || true
+
+# 托盘图标：Linux 分支从 resources 根读 tray.png（见 patch-main.py 第 6 项）。
+# macOS 载荷里只有 icon.icns/icon.png，没有 tray.png；不补的话 new Tray() 会拿到
+# 空图——不抛错、但托盘是一个看不见的空位（rc.3 装配时的实际回归）。
+cp "$B/icons/32x32/deepseek-harness.png" "$OUT/resources/tray.png"
+[ -s "$OUT/resources/tray.png" ] || { echo "托盘图标生成失败" >&2; exit 1; }
 echo "  app 文件数: $(find "$OUT/resources/app" -type f | wc -l)"
 
 say "3/6 装配 runtime 载荷"
 RT="$OUT/resources/runtime"
 rm -rf "$RT"; mkdir -p "$RT"
-cp -a "$DMG/runtime/bin" "$DMG/runtime/cli" "$DMG/runtime/office-skills" "$DMG/runtime/versions.json" "$RT/"
+# office-skills 自 0.2.2-rc.2 起被上游从 runtime 里移除，存在才复制。
+cp -a "$DMG/runtime/bin" "$DMG/runtime/cli" "$DMG/runtime/versions.json" "$RT/"
+if [ -d "$DMG/runtime/office-skills" ]; then
+  cp -a "$DMG/runtime/office-skills" "$RT/"
+else
+  echo "  · 上游未提供 office-skills（rc.2 起移除），跳过"
+fi
 mkdir -p "$RT/primary-runtime"
 cp -a "$DMG/runtime/primary-runtime/runtime.json" "$RT/primary-runtime/"
 DEPS="$RT/primary-runtime/dependencies"; mkdir -p "$DEPS"

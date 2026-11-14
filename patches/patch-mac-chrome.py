@@ -25,6 +25,7 @@
 
 用法: patch-mac-chrome.py <resources/app 目录>
 """
+import re
 import sys
 import subprocess
 from pathlib import Path
@@ -381,6 +382,16 @@ def replace_once(src: str, old: str, new: str, label: str, notes: list) -> str:
     return src.replace(old, new, 1)
 
 
+def replace_re(src: str, pattern: str, repl, label: str, notes: list) -> str:
+    """正则替换（必须唯一匹配）。上游调整 import 列表时字面量会失效。"""
+    found = re.findall(pattern, src)
+    if len(found) != 1:
+        notes.append(f'  ✗ 未匹配: {label}（{len(found)} 处）')
+        return src
+    notes.append(f'  ✓ {label}')
+    return re.sub(pattern, repl, src, count=1)
+
+
 def main(app_dir: str) -> int:
     notes: list[str] = []
     main_js = f'{app_dir}/lib/main.js'
@@ -435,10 +446,22 @@ def main(app_dir: str) -> int:
     )
 
     # --- 2b) 确保 screen 模块可用（maximize 兜底需要判断工作区）---
-    src = replace_once(
+    # 上游 import 列表逐版都在变（rc.3 去掉了 net），改为解析名字集合再插入。
+    def _ensure_screen(m):
+        names = [n.strip() for n in m.group(1).split(',') if n.strip()]
+        if 'screen' in names:
+            return m.group(0)
+        if 'session' in names:
+            names.insert(names.index('session'), 'screen')
+        else:
+            names.append('screen')
+        # 保留原语句的分号：正则把 `;` 一起吃掉了，补回去才不会漏掉语句结束符。
+        return 'import { ' + ', '.join(names) + ' } from "electron";'
+
+    src = replace_re(
         src,
-        'import { BrowserWindow, Menu, Notification, Tray, WebContentsView, app, clipboard, dialog, ipcMain, nativeImage, nativeTheme, net, powerMonitor, protocol, session, shell, systemPreferences } from "electron"',
-        'import { BrowserWindow, Menu, Notification, Tray, WebContentsView, app, clipboard, dialog, ipcMain, nativeImage, nativeTheme, net, powerMonitor, protocol, screen, session, shell, systemPreferences } from "electron"',
+        r'import \{([^}]*)\} from "electron";',
+        _ensure_screen,
         '导入 screen 模块',
         notes,
     )

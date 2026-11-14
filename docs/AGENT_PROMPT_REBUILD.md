@@ -11,15 +11,15 @@ Linux 安装包：补齐 Linux 分支、替换原生模块与运行时，再逐�
 
 | 项目 | 本次基线 |
 |---|---|
-| 上游应用 | `0.2.2-rc.1`（dmg 目录 `DeepSeek Harness 0.2.2-rc.1-arm64`） |
-| 内置 Electron（AppImage/deb/rpm） | **45.2.3** |
+| 上游应用 | `0.2.2-rc.3`（dmg 目录 `DeepSeek Harness 0.2.2-rc.3-arm64`） |
+| 内置 Electron（AppImage/deb/rpm） | **44.7.0**（取自 dmg，与上游一致） |
 | pkg.tar.zst 的 Electron | 系统提供，启动器支持 **39–45**，优先最高版本 |
 | Node / Python / pnpm | **24.21.0 / 3.12.14 / 11.28.5** |
-| 移植修复级别 | **3.6.0**：netlink 退避 + Sharp 隔离强制入包 |
-| 最低仓库提交 | 必须包含 3.6.0 图片修复；实际构建拉取当时最新 `main` 并核对 `git log` |
+| 移植修复级别 | **3.7.1**：netlink 退避 + Sharp 强制隔离 + rc.3 适配 |
+| 最低仓库提交 | 必须包含 3.7.1；实际构建拉取当时最新 `main` 并核对 `git log` |
 
 > 不要擅自升级 Node、pnpm、Python。`docs/COMPAT-TOOLCHAIN.md` 记录了升级实测及受阻原因。
-> 不要用 Electron 44.7.0 的旧产物说明替代本基线；45.2.3 已通过原生模块、四预设、托盘与启动验证。
+> 应用包内置 Electron 44.7.0；45.2.3 仅用于 Arch 的 `electron45` 运行时包，二者不要混用。
 
 ---
 
@@ -86,17 +86,16 @@ mkdir -p others
 若 7z 因 Apple LZFSE 块失败，使用 `scripts/dmg-extract.py`（需要 `/usr/lib/liblzfse.so`）
 先转成裸 HFS+ 镜像，再用 7z 解包。不要用不完整的解包结果继续。
 
-### 3.2 Electron 45.2.3
+### 3.2 Electron
 
-准备官方 Linux zip：
+应用包使用 dmg 内置的 **44.7.0**，由 `assemble-tree.sh` 自动铺好，无需额外下载。
+
+只有构建 Arch 的 `electron45` 运行时包时才需要官方 zip：
 
 ```text
 dl45/electron-v45.2.3-linux-x64.zip
 dl45/electron-v45.2.3-linux-arm64.zip
 ```
-
-`assemble-tree.sh` 仍用 44.7.0 铺初始骨架，随后**必须**用 `scripts/swap-electron.sh`
-切换到 45.2.3。Electron 44.0.0 有托盘回归；不要为了省一步停留在旧骨架。
 
 ### 3.3 Node、Python 与原生模块
 
@@ -123,7 +122,7 @@ Python 必须用 python-build-standalone 的 **`install_only_stripped`** 变体�
 | `@deepseek-ai/node-addon-system-linux-{x64,arm64}` | 0.1.2 |
 | `node-pty`（只取 `prebuilds/linux-*`） | 1.2.0-beta.15 |
 | `@deepseek-ai/libreoffice-kit-wasm` | 0.1.5（两架构共用） |
-| `@deepseek-ai/dsh-sandbox-windows-acl` | 跟随 `dsh-sandbox-local`，本版为 0.2.2-rc.1 |
+| `@deepseek-ai/dsh-sandbox-windows-acl` | 跟随 `dsh-sandbox-local`，本版为 0.2.2-rc.3 |
 
 取包用 `npm pack <pkg>@<ver>` 或 registry tgz。文件名以 `swap-native-linux.sh`
 里的 `install_tgz` 调用为准。
@@ -146,7 +145,8 @@ Python 必须用 python-build-standalone 的 **`install_only_stripped`** 变体�
 ### 4.1 展开 app.asar 为平铺目录
 
 ```bash
-RES="others/dmg/DeepSeek Harness 0.2.2-rc.1-arm64/DeepSeek Harness.app/Contents/Resources"
+# 目录名带版本号，按实际解出的名字填；也可交给 assemble-tree.sh 自动探测
+RES="others/dmg/DeepSeek Harness 0.2.2-rc.3-arm64/DeepSeek Harness.app/Contents/Resources"
 rm -rf app-new
 python3 scripts/extract-asar.py "$RES/app.asar" app-new
 ```
@@ -166,18 +166,29 @@ scripts/assemble-tree.sh arm64
 脚本会铺骨架、复制 app、装配 Node/Python/pnpm、交叉安装 Python 站点包、
 替换原生模块、修正 `runtime.json` 平台字段，并安装 netlink 守卫。
 
+rc.3 相关注意：
+
+- 上游目录名随版本变化，脚本会自动取 `others/dmg` 下最新的一个；
+  需要指定时用 `DSH_APP=<.../Contents/Resources>` 覆盖。
+- `runtime/office-skills` 自 rc.2 起被上游移除，脚本已改为存在才复制。
+- 托盘图标 `resources/tray.png` 由脚本从 `icons/32x32/` 补齐并断言非空。
+
 Python 站点包使用 manylinux 交叉安装；arm64 使用
 `manylinux_2_28_aarch64` / `manylinux_2_27_aarch64`，不要用已经过时的 `manylinux2014` 标签。
 
-### 4.3 切换内置 Electron 到 45.2.3
+### 4.3 Electron 版本
+
+`assemble-tree.sh` 使用 dmg 内置的 **44.7.0** 铺骨架，产物即用该版本，**不要替换**。
+
+`electron45-45.2.3` 是给 `pkg.tar.zst`（系统 Electron 变体）用的独立运行时包，用
+`scripts/build-electron-pkg.sh` 生成，与本轮应用包无关；两者不要混用。
+
+如需单独验证其他 Electron 版本能否启动，可用 `scripts/swap-electron.sh`
+在**临时副本**上替换骨架，验证后丢弃，不要用于出包：
 
 ```bash
-scripts/swap-electron.sh out-x64   dl45/electron-v45.2.3-linux-x64.zip   x64
-scripts/swap-electron.sh out-arm64 dl45/electron-v45.2.3-linux-arm64.zip arm64
-
-cat out-x64/version
-cat out-arm64/version
-# 两者都应是 45.2.3
+cp -al out-x64 /tmp/tree-ver
+scripts/swap-electron.sh /tmp/tree-ver dl45/electron-v45.2.3-linux-x64.zip x64
 ```
 
 该脚本保留 `resources/app`、`resources/runtime` 和托盘图标，只替换 Electron 骨架。
@@ -292,7 +303,7 @@ netlink 测试用 seccomp 模拟 `EACCES`，不会写真实 syslog。必须看�
 |---|---|---|
 | 启动 | 上述 `verify-launch-x64.sh` | `4/4 通过` |
 | 补丁痕迹 | 查 `resources/app/lib/main.js` | 含 `desktopResourcesRoot`、`desktopIsPackaged`、`linux-window-control` |
-| 静态 import | 在构建树上运行 `bash trim-app-tree.sh out-x64` | 全部可解析；0.2.2-rc.1 实测 119 项，数量可随上游变化 |
+| 静态 import | 在构建树上运行 `bash trim-app-tree.sh out-x64` | 全部可解析；数量随上游变化，以自检输出为准 |
 | 托盘 | 查 `resources/tray.png` 并用 `nativeImage` 读取 | 文件存在、非空、32×32 |
 | 指纹 | 查 addon `Matches` 处字节 | x64 `b8010000`；arm64 `20008052` |
 | Sharp | `./tests/test-image-worker.sh out-x64 x64` | 两轮幂等安装均通过；大图/动画/并发/坏图通过；主进程无 libvips |
@@ -309,7 +320,7 @@ Arch pkg 还需在真实安装布局验证：
 
 ```bash
 dsh --version
-# 期望 0.2.2-rc.1
+# 期望 0.2.2-rc.3
 ```
 
 ### 5.3 Agent 预设 roster——使用隔离 profile
@@ -495,7 +506,7 @@ Ubuntu 21.04 自带 zstd backport；上游 Debian 到 dpkg 1.21.18 才加入。
 
 ## 兼容性说明
 - zstd deb 支持范围
-- pkg.tar.zst 使用系统 Electron 39–45，其余格式内置 45.2.3
+- pkg.tar.zst 使用系统 Electron 39–45，其余格式内置 44.7.0
 
 ## 未能验证
 - 明确列出 arm64 启动、真机桌面环境等未覆盖项

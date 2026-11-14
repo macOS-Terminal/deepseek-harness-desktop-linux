@@ -13,6 +13,7 @@ draggable.
 
 Usage: patch-titlebar.py <path-to-lib/main.js>
 """
+import re
 import sys
 
 
@@ -30,31 +31,36 @@ def main() -> int:
         src = src.replace(old, new)
         done.append(label)
 
+    def sub_re(pattern, repl, label, flags=0):
+        """按正则替换（必须唯一匹配），用于上游改写对象字面量字段时保持健壮。"""
+        nonlocal src
+        found = re.findall(pattern, src, flags)
+        if len(found) != 1:
+            missing.append(f'{label}（匹配 {len(found)} 处）')
+            return
+        src = re.sub(pattern, repl, src, count=1, flags=flags)
+        done.append(label)
+
     # 1) Main window: add a Linux branch next to the win32/darwin ones.
-    sub(
-        '\t\t...process.platform === "win32" && primary ? {\n'
-        '\t\t\ttitleBarStyle: "hidden",\n'
-        '\t\t\ttitleBarOverlay: {\n'
-        '\t\t\t\theight: 40,\n'
-        '\t\t\t\tcolor: chromeFallbackFill(),\n'
-        '\t\t\t\tsymbolColor: nativeTheme.shouldUseDarkColors ? "#f9fafb" : "#0f1115"\n'
-        '\t\t\t}\n'
-        '\t\t} : {},',
-        '\t\t...process.platform === "win32" && primary ? {\n'
-        '\t\t\ttitleBarStyle: "hidden",\n'
-        '\t\t\ttitleBarOverlay: {\n'
-        '\t\t\t\theight: 40,\n'
-        '\t\t\t\tcolor: chromeFallbackFill(),\n'
-        '\t\t\t\tsymbolColor: nativeTheme.shouldUseDarkColors ? "#f9fafb" : "#0f1115"\n'
-        '\t\t\t}\n'
-        '\t\t} : {},\n'
-        '\t\t...process.platform === "linux" && primary ? {\n'
-        '\t\t\ttitleBarStyle: "hidden",\n'
-        '\t\t\ttitleBarOverlay: {\n'
-        '\t\t\t\theight: 40,\n'
-        '\t\t\t\tsymbolColor: nativeTheme.shouldUseDarkColors ? "#f9fafb" : "#0f1115"\n'
-        '\t\t\t}\n'
-        '\t\t} : {},',
+    #
+    # 0.2.2-rc.3 在 win32 分支里多插了一行 backgroundColor、并把窗口选项搬进
+    # createWindow()，字面量匹配会 0 命中。这里改成「抓到整个 win32 块再追加」，
+    # 对块内字段增删免疫；块尾锚在 2 个 tab 的 `} : {},` 上，不会误吞后面的分支。
+    def _add_linux_main(match):
+        linux = (
+            '\n\t\t...process.platform === "linux" && primary ? {\n'
+            '\t\t\ttitleBarStyle: "hidden",\n'
+            '\t\t\ttitleBarOverlay: {\n'
+            '\t\t\t\theight: 40,\n'
+            '\t\t\t\tsymbolColor: nativeTheme.shouldUseDarkColors ? "#f9fafb" : "#0f1115"\n'
+            '\t\t\t}\n'
+            '\t\t} : {},'
+        )
+        return match.group(1) + linux
+
+    sub_re(
+        r'(\t\t\.\.\.process\.platform === "win32" && primary \? \{\n[\s\S]*?\n\t\t\} : \{\},)',
+        _add_linux_main,
         '主窗口：Linux 隐藏标题栏并启用系统装饰',
     )
 
